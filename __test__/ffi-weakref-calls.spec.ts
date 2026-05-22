@@ -10,7 +10,7 @@ const { gcUntil } = require('./common/gc');
 const ffi = require('../index.js');
 const { fixtureSymbols, libraryPath } = require('./ffi-test-common');
 
-test.skip('ffi unrefCallback releases callback function', async (t) => {
+test('ffi unrefCallback releases callback function', async (t) => {
   const { lib, functions: symbols } = ffi.dlopen(libraryPath, fixtureSymbols);
   t.teardown(() => lib.close());
 
@@ -33,7 +33,7 @@ test.skip('ffi unrefCallback releases callback function', async (t) => {
   lib.unregisterCallback(pointer);
 });
 
-test.skip('ffi refCallback retains callback function', async (t) => {
+test('ffi refCallback retains callback function', async (t) => {
   const { lib } = ffi.dlopen(libraryPath, fixtureSymbols);
   t.teardown(() => lib.close());
 
