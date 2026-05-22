@@ -1,3 +1,5 @@
+use std::ffi::CString;
+
 use napi::bindgen_prelude::*;
 
 use crate::types::FFIType;
@@ -9,6 +11,8 @@ use crate::types::FFIType;
 pub struct ParsedSignature {
   pub return_type: FFIType,
   pub arg_types: Vec<FFIType>,
+  pub return_type_name: String,
+  pub arg_type_names: Vec<String>,
 }
 
 /// Parse a function signature from a JS object.
@@ -40,7 +44,7 @@ pub fn parse_function_signature(name: &str, sig: &Object) -> Result<ParsedSignat
   }
 
   // Parse return type
-  let return_type = if has_returns || has_return || has_result {
+  let return_type_name = if has_returns || has_return || has_result {
     let key = if has_returns {
       "returns"
     } else if has_return {
@@ -48,19 +52,20 @@ pub fn parse_function_signature(name: &str, sig: &Object) -> Result<ParsedSignat
     } else {
       "result"
     };
-    let ret_str = sig.get::<String>(key)?.ok_or_else(|| {
+    get_string_property(sig, key)?.ok_or_else(|| {
       Error::new(
         Status::InvalidArg,
         format!("Function signature of {name} must have a string return type"),
       )
-    })?;
-    FFIType::from_str(&ret_str)?
+    })?
   } else {
-    FFIType::Void
+    "void".to_string()
   };
+  let return_type = FFIType::from_str(&return_type_name)?;
 
   // Parse argument types
-  let arg_types = if has_arguments || has_parameters {
+
+  let (arg_types, arg_type_names) = if has_arguments || has_parameters {
     let key = if has_arguments {
       "arguments"
     } else {
@@ -74,17 +79,58 @@ pub fn parse_function_signature(name: &str, sig: &Object) -> Result<ParsedSignat
     })?;
     let len = args_array.len();
     let mut types = Vec::with_capacity(len as usize);
+    let mut names = Vec::with_capacity(len as usize);
     for i in 0..len {
-      let arg_str: String = args_array.get_element(i)?;
+      let arg_str = get_array_string_element(&args_array, i, name)?;
       types.push(FFIType::from_str(&arg_str)?);
+      names.push(arg_str);
     }
-    types
+    (types, names)
   } else {
-    Vec::new()
+    (Vec::new(), Vec::new())
   };
 
   Ok(ParsedSignature {
     return_type,
     arg_types,
+    return_type_name,
+    arg_type_names,
+  })
+}
+
+fn get_string_property(sig: &Object, key: &str) -> Result<Option<String>> {
+  let Some(value) = sig.get::<Unknown>(key)? else {
+    return Ok(None);
+  };
+  if value.get_type()? != ValueType::String {
+    return Err(Error::new(
+      Status::InvalidArg,
+      format!("Signature property '{key}' must be a string"),
+    ));
+  }
+  let string = value.coerce_to_string()?.into_utf8()?.as_str()?.to_owned();
+  reject_null_bytes(&string, &format!("Signature property '{key}'"))?;
+  Ok(Some(string))
+}
+
+fn get_array_string_element(args_array: &Array, index: u32, name: &str) -> Result<String> {
+  let value: Unknown = args_array.get_element(index)?;
+  if value.get_type()? != ValueType::String {
+    return Err(Error::new(
+      Status::InvalidArg,
+      format!("Argument {index} of function {name} must be a string"),
+    ));
+  }
+  let string = value.coerce_to_string()?.into_utf8()?.as_str()?.to_owned();
+  reject_null_bytes(&string, &format!("Argument {index} of function {name}"))?;
+  Ok(string)
+}
+
+fn reject_null_bytes(value: &str, label: &str) -> Result<()> {
+  CString::new(value).map(|_| ()).map_err(|_| {
+    Error::new(
+      Status::InvalidArg,
+      format!("{label} must not contain null bytes"),
+    )
   })
 }

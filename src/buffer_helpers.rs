@@ -88,21 +88,88 @@ pub fn to_array_buffer(
 /// Mirrors node:ffi's exportBytes().
 #[napi]
 pub fn export_bytes(source: Unknown, ptr: BigInt, len: u32) -> Result<()> {
+  export_bytes_impl(source, ptr, len, SourceKind::Any)
+}
+
+/// Export a Buffer to a target pointer with Node's public API validation moved native-side.
+#[napi]
+pub fn export_buffer(source: Unknown, ptr: BigInt, len: u32) -> Result<()> {
+  export_bytes_impl(source, ptr, len, SourceKind::Buffer)
+}
+
+/// Export an ArrayBuffer to a target pointer with Node's public API validation moved native-side.
+#[napi]
+pub fn export_array_buffer(source: Unknown, ptr: BigInt, len: u32) -> Result<()> {
+  export_bytes_impl(source, ptr, len, SourceKind::ArrayBuffer)
+}
+
+/// Export an ArrayBufferView/TypedArray/DataView to a target pointer with Node's public API validation moved native-side.
+#[napi]
+pub fn export_array_buffer_view(source: Unknown, ptr: BigInt, len: u32) -> Result<()> {
+  export_bytes_impl(source, ptr, len, SourceKind::ArrayBufferView)
+}
+
+/// Encode and export a NUL-terminated string to a target pointer.
+#[napi]
+pub fn export_string(env: &Env, value: String, ptr: BigInt, len: u32, encoding: Option<String>) -> Result<()> {
+  let encoding = encoding.unwrap_or_else(|| "utf8".to_string());
+  let terminator_size = match encoding.to_ascii_lowercase().as_str() {
+    "ucs2" | "ucs-2" | "utf16le" | "utf-16le" => 2usize,
+    _ => 1usize,
+  };
+
+  let bytes = encode_string(env, &value, &encoding)?;
+  let required_len = bytes.len().checked_add(terminator_size).ok_or_else(|| {
+    Error::new(
+      Status::InvalidArg,
+      "The encoded string length exceeds the platform address range".to_string(),
+    )
+  })?;
+  let length = len as usize;
+  if length < required_len {
+    return Err(Error::new(
+      Status::InvalidArg,
+      format!("len must be >= {required_len}"),
+    ));
+  }
+
+  let addr = get_validated_pointer(&ptr, "pointer")?;
+  validate_pointer_span(addr, 0, length)?;
+  if addr == 0 && required_len > 0 {
+    return Err(Error::new(
+      Status::InvalidArg,
+      "Cannot copy to a null pointer".to_string(),
+    ));
+  }
+
+  unsafe {
+    if !bytes.is_empty() {
+      std::ptr::copy_nonoverlapping(bytes.as_ptr(), addr as *mut u8, bytes.len());
+    }
+    std::ptr::write_bytes((addr + bytes.len()) as *mut u8, 0, terminator_size);
+  }
+  Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum SourceKind {
+  Any,
+  Buffer,
+  ArrayBuffer,
+  ArrayBufferView,
+}
+
+fn export_bytes_impl(source: Unknown, ptr: BigInt, len: u32, kind: SourceKind) -> Result<()> {
   let addr = get_validated_pointer(&ptr, "pointer")?;
   let length = len as usize;
 
-  let (src_ptr, src_len) = get_buffer_like_pointer_and_len(&source).ok_or_else(|| {
-    Error::new(
-      Status::InvalidArg,
-      "The first argument must be a Buffer, ArrayBuffer, or ArrayBufferView".to_string(),
-    )
-  })?;
+  let (src_ptr, src_len) = get_typed_source_pointer_and_len(&source, kind)?;
 
   validate_pointer_span(addr, 0, length)?;
   if length < src_len {
     return Err(Error::new(
       Status::InvalidArg,
-      "The length must be >= source byte length".to_string(),
+      format!("len must be >= {src_len}"),
     ));
   }
   if addr == 0 && src_len > 0 {
@@ -132,6 +199,32 @@ pub fn get_raw_pointer(source: Unknown) -> Result<BigInt> {
   Ok(BigInt::from(ptr as u64))
 }
 
+fn get_typed_source_pointer_and_len(value: &Unknown, kind: SourceKind) -> Result<(*const u8, usize)> {
+  match kind {
+    SourceKind::Any => get_buffer_like_pointer_and_len(value).ok_or_else(|| {
+      Error::new(
+        Status::InvalidArg,
+        "The first argument must be a Buffer, ArrayBuffer, or ArrayBufferView".to_string(),
+      )
+    }),
+    SourceKind::Buffer => get_buffer_pointer_and_len(value).ok_or_else(|| {
+      Error::new(Status::InvalidArg, "buffer must be a Buffer".to_string())
+    }),
+    SourceKind::ArrayBuffer => get_arraybuffer_pointer_and_len(value).ok_or_else(|| {
+      Error::new(
+        Status::InvalidArg,
+        "arrayBuffer must be an ArrayBuffer".to_string(),
+      )
+    }),
+    SourceKind::ArrayBufferView => get_typedarray_pointer_and_len(value).ok_or_else(|| {
+      Error::new(
+        Status::InvalidArg,
+        "arrayBufferView must be an ArrayBufferView".to_string(),
+      )
+    }),
+  }
+}
+
 fn get_buffer_like_pointer_and_len(value: &Unknown) -> Option<(*const u8, usize)> {
   if let Some(result) = get_buffer_pointer_and_len(value) {
     return Some(result);
@@ -140,6 +233,32 @@ fn get_buffer_like_pointer_and_len(value: &Unknown) -> Option<(*const u8, usize)
     return Some(result);
   }
   get_typedarray_pointer_and_len(value)
+}
+
+fn encode_string(env: &Env, value: &str, encoding: &str) -> Result<Vec<u8>> {
+  let mut buffer = std::ptr::null_mut();
+  let mut global = std::ptr::null_mut();
+  let mut from = std::ptr::null_mut();
+  let mut result = std::ptr::null_mut();
+  let mut data = std::ptr::null_mut::<c_void>();
+  let mut len = 0usize;
+  let buffer_name = std::ffi::CString::new("Buffer").expect("static string has no nul bytes");
+  let from_name = std::ffi::CString::new("from").expect("static string has no nul bytes");
+
+  check_status!(unsafe { napi::sys::napi_get_global(env.raw(), &mut global) })?;
+  check_status!(unsafe {
+    napi::sys::napi_get_named_property(env.raw(), global, buffer_name.as_ptr(), &mut buffer)
+  })?;
+  check_status!(unsafe { napi::sys::napi_get_named_property(env.raw(), buffer, from_name.as_ptr(), &mut from) })?;
+
+  let js_value = env.create_string(value)?;
+  let js_encoding = env.create_string(encoding)?;
+  let argv = [js_value.raw(), js_encoding.raw()];
+  check_status!(unsafe {
+    napi::sys::napi_call_function(env.raw(), buffer, from, argv.len(), argv.as_ptr(), &mut result)
+  })?;
+  check_status!(unsafe { napi::sys::napi_get_buffer_info(env.raw(), result, &mut data, &mut len) })?;
+  Ok(unsafe { std::slice::from_raw_parts(data.cast::<u8>(), len) }.to_vec())
 }
 
 fn get_buffer_pointer_and_len(value: &Unknown) -> Option<(*const u8, usize)> {

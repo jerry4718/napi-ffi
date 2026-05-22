@@ -5,7 +5,7 @@ use std::rc::Rc;
 use napi_derive::napi;
 
 use napi::bindgen_prelude::*;
-use napi::{Env, Unknown, ValueType};
+use napi::{Env, JsValue, Unknown, ValueType};
 
 use crate::ffi_callback::FFICallbackOwned;
 use crate::ffi_function::FFIFunction;
@@ -281,6 +281,8 @@ impl DynamicLibrary {
           let parsed = crate::signature::ParsedSignature {
             return_type: crate::types::FFIType::Void,
             arg_types: Vec::new(),
+            return_type_name: "void".to_string(),
+            arg_type_names: Vec::new(),
           };
           (parsed, sig_or_fn)
         }
@@ -378,7 +380,13 @@ fn create_js_function_wrapper<'env>(
   name: &str,
   ffifn: Rc<RefCell<FFIFunction>>,
 ) -> Result<Function<'env, (), napi::sys::napi_value>> {
-  env.create_function_from_closure::<(), napi::sys::napi_value, _>(
+  let fn_ref = ffifn.borrow();
+  let ptr = fn_ref.ptr;
+  let return_type_name = fn_ref.return_type_name.clone();
+  let arg_type_names = fn_ref.arg_type_names.clone();
+  drop(fn_ref);
+
+  let js_fn = env.create_function_from_closure::<(), napi::sys::napi_value, _>(
     name,
     move |ctx| -> Result<napi::sys::napi_value> {
       let args: Vec<Unknown> = (0..ctx.length())
@@ -388,5 +396,65 @@ fn create_js_function_wrapper<'env>(
       let result = fn_guard.invoke(ctx.env, &args)?;
       Ok(result.raw())
     },
-  )
+  )?;
+
+  let raw_env = env.raw();
+  set_bigint_property(raw_env, js_fn.raw(), "pointer", ptr as u64)?;
+  set_string_property(raw_env, js_fn.raw(), "__ffiReturnType", &return_type_name)?;
+  set_string_array_property(env, js_fn.raw(), "__ffiArgTypes", &arg_type_names)?;
+
+  Ok(js_fn)
+}
+
+fn set_bigint_property(
+  env: napi::sys::napi_env,
+  object: napi::sys::napi_value,
+  name: &str,
+  value: u64,
+) -> Result<()> {
+  let mut js_value = std::ptr::null_mut();
+  check_status!(unsafe { napi::sys::napi_create_bigint_uint64(env, value, &mut js_value) })?;
+  set_named_property(env, object, name, js_value)
+}
+
+fn set_string_property(
+  env: napi::sys::napi_env,
+  object: napi::sys::napi_value,
+  name: &str,
+  value: &str,
+) -> Result<()> {
+  let mut js_value = std::ptr::null_mut();
+  check_status!(unsafe {
+    napi::sys::napi_create_string_utf8(env, value.as_ptr().cast(), value.len() as isize, &mut js_value)
+  })?;
+  set_named_property(env, object, name, js_value)
+}
+
+fn set_string_array_property(
+  env: &Env,
+  object: napi::sys::napi_value,
+  name: &str,
+  values: &[String],
+) -> Result<()> {
+  let mut array = std::ptr::null_mut();
+  check_status!(unsafe { napi::sys::napi_create_array_with_length(env.raw(), values.len(), &mut array) })?;
+  for (index, value) in values.iter().enumerate() {
+    let mut element = std::ptr::null_mut();
+    check_status!(unsafe {
+      napi::sys::napi_create_string_utf8(env.raw(), value.as_ptr().cast(), value.len() as isize, &mut element)
+    })?;
+    check_status!(unsafe { napi::sys::napi_set_element(env.raw(), array, index as u32, element) })?;
+  }
+  set_named_property(env.raw(), object, name, array)
+}
+
+fn set_named_property(
+  env: napi::sys::napi_env,
+  object: napi::sys::napi_value,
+  name: &str,
+  value: napi::sys::napi_value,
+) -> Result<()> {
+  let property = std::ffi::CString::new(name).expect("static string has no nul bytes");
+  check_status!(unsafe { napi::sys::napi_set_named_property(env, object, property.as_ptr(), value) })?;
+  Ok(())
 }

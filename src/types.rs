@@ -87,23 +87,17 @@ fn read_number(value: &Unknown, error: impl Into<String>) -> Result<f64> {
 }
 
 /// Validate a JS Number argument to a signed integer in range [min, max].
-pub fn validate_signed_int(n: f64, min: i64, max: i64, type_name: &str) -> Result<i64> {
+pub fn validate_signed_int(n: f64, min: i64, max: i64, error: impl Into<String>) -> Result<i64> {
   if !n.is_finite() || n.fract() != 0.0 || n < (min as f64) || n > (max as f64) {
-    return Err(Error::new(
-      Status::InvalidArg,
-      format!("Value must be an {type_name}"),
-    ));
+    return Err(Error::new(Status::InvalidArg, error.into()));
   }
   Ok(n as i64)
 }
 
 /// Validate a JS Number argument to an unsigned integer in range [0, max].
-pub fn validate_unsigned_int(n: f64, max: u64, type_name: &str) -> Result<u64> {
+pub fn validate_unsigned_int(n: f64, max: u64, error: impl Into<String>) -> Result<u64> {
   if !n.is_finite() || n.fract() != 0.0 || n < 0.0 || n > (max as f64) {
-    return Err(Error::new(
-      Status::InvalidArg,
-      format!("Value must be a {type_name}"),
-    ));
+    return Err(Error::new(Status::InvalidArg, error.into()));
   }
   Ok(n as u64)
 }
@@ -124,37 +118,37 @@ pub fn marshal_js_to_c(
     }
     FFIType::Sint8 => {
       let val = read_number(arg, format!("Argument {index} must be an int8"))?;
-      let n = validate_signed_int(val, i8::MIN as i64, i8::MAX as i64, "int8")?;
+      let n = validate_signed_int(val, i8::MIN as i64, i8::MAX as i64, format!("Argument {index} must be an int8"))?;
       *storage = (n as i8) as FFIStorage;
       Ok(None)
     }
     FFIType::Uint8 => {
       let val = read_number(arg, format!("Argument {index} must be a uint8"))?;
-      let n = validate_unsigned_int(val, u8::MAX as u64, "uint8")?;
+      let n = validate_unsigned_int(val, u8::MAX as u64, format!("Argument {index} must be a uint8"))?;
       *storage = (n as u8) as FFIStorage;
       Ok(None)
     }
     FFIType::Sint16 => {
       let val = read_number(arg, format!("Argument {index} must be an int16"))?;
-      let n = validate_signed_int(val, i16::MIN as i64, i16::MAX as i64, "int16")?;
+      let n = validate_signed_int(val, i16::MIN as i64, i16::MAX as i64, format!("Argument {index} must be an int16"))?;
       *storage = (n as i16) as FFIStorage;
       Ok(None)
     }
     FFIType::Uint16 => {
       let val = read_number(arg, format!("Argument {index} must be a uint16"))?;
-      let n = validate_unsigned_int(val, u16::MAX as u64, "uint16")?;
+      let n = validate_unsigned_int(val, u16::MAX as u64, format!("Argument {index} must be a uint16"))?;
       *storage = (n as u16) as FFIStorage;
       Ok(None)
     }
     FFIType::Sint32 => {
       let val = read_number(arg, format!("Argument {index} must be an int32"))?;
-      let n = validate_signed_int(val, i32::MIN as i64, i32::MAX as i64, "int32")?;
+      let n = validate_signed_int(val, i32::MIN as i64, i32::MAX as i64, format!("Argument {index} must be an int32"))?;
       *storage = (n as i32) as FFIStorage;
       Ok(None)
     }
     FFIType::Uint32 => {
       let val = read_number(arg, format!("Argument {index} must be a uint32"))?;
-      let n = validate_unsigned_int(val, u32::MAX as u64, "uint32")?;
+      let n = validate_unsigned_int(val, u32::MAX as u64, format!("Argument {index} must be a uint32"))?;
       *storage = (n as u32) as FFIStorage;
       Ok(None)
     }

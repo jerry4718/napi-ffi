@@ -14,6 +14,8 @@ pub struct FFIFunction {
   pub cif: Cif,
   pub return_type: FFIType,
   pub arg_types: Vec<FFIType>,
+  pub return_type_name: String,
+  pub arg_type_names: Vec<String>,
   pub closed: bool,
 }
 
@@ -30,6 +32,8 @@ impl FFIFunction {
       cif,
       return_type: sig.return_type,
       arg_types: sig.arg_types.clone(),
+      return_type_name: sig.return_type_name.clone(),
+      arg_type_names: sig.arg_type_names.clone(),
       closed: false,
     })
   }
