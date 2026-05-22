@@ -4,13 +4,18 @@ use napi::bindgen_prelude::*;
 use napi::{noop_finalize, Env, Unknown};
 use napi_derive::napi;
 
-use crate::types::{get_validated_pointer, validate_pointer_span};
+use crate::args::{
+  expect_string, validate_pointer_span_with_message, validated_pointer, validated_pointer_from_unknown, validated_size,
+  validated_size_with_code,
+};
+use crate::errors::{throw_coded_error, JsErrorKind};
+use crate::types::validate_pointer_span;
 
 /// Read a NUL-terminated C string from a pointer.
 /// Mirrors node:ffi's toString().
 #[napi]
 pub fn to_string(ptr: BigInt) -> Result<String> {
-  let addr = get_validated_pointer(&ptr, "first argument")?;
+  let addr = validated_pointer(&ptr, "first argument")?;
   if addr == 0 {
     return Ok(String::new());
   }
@@ -25,9 +30,15 @@ pub fn to_string(ptr: BigInt) -> Result<String> {
 
 /// Create a Buffer from a pointer and length. `writable === false` returns a borrowed raw-memory view like node:ffi.
 #[napi]
-pub fn to_buffer(env: &Env, ptr: BigInt, len: u32, writable: Option<bool>) -> Result<BufferSlice<'_>> {
-  let addr = get_validated_pointer(&ptr, "first argument")?;
-  let length = len as usize;
+pub fn to_buffer<'env>(
+  env: &'env Env,
+  ptr: Unknown<'env>,
+  len: Unknown<'env>,
+  writable: Option<bool>,
+) -> Result<BufferSlice<'env>> {
+  let addr = validated_pointer_from_unknown(&ptr, "first argument")?;
+  let length = validated_size(&len, "length")?;
+  validate_buffer_length(env, length)?;
 
   if addr == 0 && length > 0 {
     return Err(Error::new(
@@ -36,7 +47,7 @@ pub fn to_buffer(env: &Env, ptr: BigInt, len: u32, writable: Option<bool>) -> Re
     ));
   }
 
-  validate_pointer_span(addr, 0, length)?;
+  validate_buffer_pointer_span(addr, length)?;
 
   if !writable.unwrap_or(true) && length > 0 {
     return unsafe { BufferSlice::from_external(env, addr as *mut u8, length, (), noop_finalize) };
@@ -53,14 +64,15 @@ pub fn to_buffer(env: &Env, ptr: BigInt, len: u32, writable: Option<bool>) -> Re
 
 /// Create an ArrayBuffer from a pointer and length. `copy === false` returns a borrowed raw-memory view like node:ffi.
 #[napi]
-pub fn to_array_buffer(
-  env: &Env,
-  ptr: BigInt,
-  len: u32,
+pub fn to_array_buffer<'env>(
+  env: &'env Env,
+  ptr: Unknown<'env>,
+  len: Unknown<'env>,
   copy: Option<bool>,
-) -> Result<ArrayBuffer<'_>> {
-  let addr = get_validated_pointer(&ptr, "first argument")?;
-  let length = len as usize;
+) -> Result<ArrayBuffer<'env>> {
+  let addr = validated_pointer_from_unknown(&ptr, "first argument")?;
+  let length = validated_size(&len, "length")?;
+  validate_buffer_length(env, length)?;
 
   if addr == 0 && length > 0 {
     return Err(Error::new(
@@ -69,7 +81,7 @@ pub fn to_array_buffer(
     ));
   }
 
-  validate_pointer_span(addr, 0, length)?;
+  validate_buffer_pointer_span(addr, length)?;
 
   if !copy.unwrap_or(true) && length > 0 {
     return unsafe { ArrayBuffer::from_external(env, addr as *mut u8, length, (), noop_finalize) };
@@ -87,32 +99,37 @@ pub fn to_array_buffer(
 /// Export bytes from a Buffer/ArrayBuffer/TypedArray to a target pointer.
 /// Mirrors node:ffi's exportBytes().
 #[napi]
-pub fn export_bytes(source: Unknown, ptr: BigInt, len: u32) -> Result<()> {
-  export_bytes_impl(source, ptr, len, SourceKind::Any)
+pub fn export_bytes(env: &Env, source: Unknown, ptr: BigInt, len: Unknown) -> Result<()> {
+  export_bytes_impl(env, source, ptr, len, SourceKind::Any)
 }
 
 /// Export a Buffer to a target pointer with Node's public API validation moved native-side.
 #[napi]
-pub fn export_buffer(source: Unknown, ptr: BigInt, len: u32) -> Result<()> {
-  export_bytes_impl(source, ptr, len, SourceKind::Buffer)
+pub fn export_buffer(env: &Env, source: Unknown, ptr: BigInt, len: Unknown) -> Result<()> {
+  export_bytes_impl(env, source, ptr, len, SourceKind::Buffer)
 }
 
 /// Export an ArrayBuffer to a target pointer with Node's public API validation moved native-side.
 #[napi]
-pub fn export_array_buffer(source: Unknown, ptr: BigInt, len: u32) -> Result<()> {
-  export_bytes_impl(source, ptr, len, SourceKind::ArrayBuffer)
+pub fn export_array_buffer(env: &Env, source: Unknown, ptr: BigInt, len: Unknown) -> Result<()> {
+  export_bytes_impl(env, source, ptr, len, SourceKind::ArrayBuffer)
 }
 
 /// Export an ArrayBufferView/TypedArray/DataView to a target pointer with Node's public API validation moved native-side.
 #[napi]
-pub fn export_array_buffer_view(source: Unknown, ptr: BigInt, len: u32) -> Result<()> {
-  export_bytes_impl(source, ptr, len, SourceKind::ArrayBufferView)
+pub fn export_array_buffer_view(env: &Env, source: Unknown, ptr: BigInt, len: Unknown) -> Result<()> {
+  export_bytes_impl(env, source, ptr, len, SourceKind::ArrayBufferView)
 }
 
 /// Encode and export a NUL-terminated string to a target pointer.
 #[napi]
-pub fn export_string(env: &Env, value: String, ptr: BigInt, len: u32, encoding: Option<String>) -> Result<()> {
-  let encoding = encoding.unwrap_or_else(|| "utf8".to_string());
+pub fn export_string(env: &Env, value: Unknown, ptr: BigInt, len: Unknown, encoding: Option<Unknown>) -> Result<()> {
+  let value = expect_string(env, &value, "source")?;
+  let length = validated_size_with_code(env, &len, "length")?;
+  let encoding = match encoding {
+    Some(value) => expect_string(env, &value, "encoding")?,
+    None => "utf8".to_string(),
+  };
   let terminator_size = match encoding.to_ascii_lowercase().as_str() {
     "ucs2" | "ucs-2" | "utf16le" | "utf-16le" => 2usize,
     _ => 1usize,
@@ -125,15 +142,16 @@ pub fn export_string(env: &Env, value: String, ptr: BigInt, len: u32, encoding: 
       "The encoded string length exceeds the platform address range".to_string(),
     )
   })?;
-  let length = len as usize;
   if length < required_len {
-    return Err(Error::new(
-      Status::InvalidArg,
+    return throw_coded_error(
+      env,
+      JsErrorKind::RangeError,
+      "ERR_OUT_OF_RANGE",
       format!("len must be >= {required_len}"),
-    ));
+    );
   }
 
-  let addr = get_validated_pointer(&ptr, "pointer")?;
+  let addr = validated_pointer(&ptr, "pointer")?;
   validate_pointer_span(addr, 0, length)?;
   if addr == 0 && required_len > 0 {
     return Err(Error::new(
@@ -159,18 +177,20 @@ enum SourceKind {
   ArrayBufferView,
 }
 
-fn export_bytes_impl(source: Unknown, ptr: BigInt, len: u32, kind: SourceKind) -> Result<()> {
-  let addr = get_validated_pointer(&ptr, "pointer")?;
-  let length = len as usize;
+fn export_bytes_impl(env: &Env, source: Unknown, ptr: BigInt, len: Unknown, kind: SourceKind) -> Result<()> {
+  let addr = validated_pointer(&ptr, "pointer")?;
+  let length = validated_size_with_code(env, &len, "length")?;
 
-  let (src_ptr, src_len) = get_typed_source_pointer_and_len(&source, kind)?;
+  let (src_ptr, src_len) = get_typed_source_pointer_and_len(env, &source, kind)?;
 
   validate_pointer_span(addr, 0, length)?;
   if length < src_len {
-    return Err(Error::new(
-      Status::InvalidArg,
+    return throw_coded_error(
+      env,
+      JsErrorKind::RangeError,
+      "ERR_OUT_OF_RANGE",
       format!("len must be >= {src_len}"),
-    ));
+    );
   }
   if addr == 0 && src_len > 0 {
     return Err(Error::new(
@@ -190,39 +210,37 @@ fn export_bytes_impl(source: Unknown, ptr: BigInt, len: u32, kind: SourceKind) -
 /// Mirrors node:ffi's getRawPointer().
 #[napi]
 pub fn get_raw_pointer(source: Unknown) -> Result<BigInt> {
-  let (ptr, _) = get_buffer_like_pointer_and_len(&source).ok_or_else(|| {
-    Error::new(
-      Status::InvalidArg,
-      "The first argument must be a Buffer, ArrayBuffer, or ArrayBufferView".to_string(),
-    )
-  })?;
+  let Some((ptr, _)) = get_buffer_like_pointer_and_len(&source) else {
+    let env = env_from_unknown(&source);
+    return throw_coded_error(
+      &env,
+      JsErrorKind::TypeError,
+      "ERR_INVALID_ARG_TYPE",
+      "The first argument must be a Buffer, ArrayBuffer, or ArrayBufferView",
+    );
+  };
   Ok(BigInt::from(ptr as u64))
 }
 
-fn get_typed_source_pointer_and_len(value: &Unknown, kind: SourceKind) -> Result<(*const u8, usize)> {
-  match kind {
-    SourceKind::Any => get_buffer_like_pointer_and_len(value).ok_or_else(|| {
-      Error::new(
-        Status::InvalidArg,
-        "The first argument must be a Buffer, ArrayBuffer, or ArrayBufferView".to_string(),
-      )
-    }),
-    SourceKind::Buffer => get_buffer_pointer_and_len(value).ok_or_else(|| {
-      Error::new(Status::InvalidArg, "buffer must be a Buffer".to_string())
-    }),
-    SourceKind::ArrayBuffer => get_arraybuffer_pointer_and_len(value).ok_or_else(|| {
-      Error::new(
-        Status::InvalidArg,
-        "arrayBuffer must be an ArrayBuffer".to_string(),
-      )
-    }),
-    SourceKind::ArrayBufferView => get_typedarray_pointer_and_len(value).ok_or_else(|| {
-      Error::new(
-        Status::InvalidArg,
-        "arrayBufferView must be an ArrayBufferView".to_string(),
-      )
-    }),
+fn get_typed_source_pointer_and_len(env: &Env, value: &Unknown, kind: SourceKind) -> Result<(*const u8, usize)> {
+  let result = match kind {
+    SourceKind::Any => get_buffer_like_pointer_and_len(value),
+    SourceKind::Buffer => get_buffer_pointer_and_len(value),
+    SourceKind::ArrayBuffer => get_arraybuffer_pointer_and_len(value),
+    SourceKind::ArrayBufferView => get_typedarray_pointer_and_len(value),
+  };
+
+  if let Some(result) = result {
+    return Ok(result);
   }
+
+  let message = match kind {
+    SourceKind::Any => "The first argument must be a Buffer, ArrayBuffer, or ArrayBufferView",
+    SourceKind::Buffer => "buffer must be a Buffer",
+    SourceKind::ArrayBuffer => "arrayBuffer must be an ArrayBuffer",
+    SourceKind::ArrayBufferView => "arrayBufferView must be an ArrayBufferView",
+  };
+  throw_coded_error(env, JsErrorKind::TypeError, "ERR_INVALID_ARG_TYPE", message)
 }
 
 fn get_buffer_like_pointer_and_len(value: &Unknown) -> Option<(*const u8, usize)> {
@@ -233,6 +251,32 @@ fn get_buffer_like_pointer_and_len(value: &Unknown) -> Option<(*const u8, usize)
     return Some(result);
   }
   get_typedarray_pointer_and_len(value)
+}
+
+fn validate_buffer_pointer_span(addr: usize, length: usize) -> Result<()> {
+  validate_pointer_span_with_message(
+    addr,
+    0,
+    length,
+    "The pointer and length exceed the platform address range",
+  )
+}
+
+fn validate_buffer_length(env: &Env, length: usize) -> Result<()> {
+  const MAX_BUFFER_LENGTH: usize = 0x1f_ffff_ffff_ffff;
+  if length > MAX_BUFFER_LENGTH {
+    return throw_coded_error(
+      env,
+      JsErrorKind::RangeError,
+      "ERR_BUFFER_TOO_LARGE",
+      "Cannot create a Buffer larger than buffer.constants.MAX_LENGTH",
+    );
+  }
+  Ok(())
+}
+
+fn env_from_unknown(value: &Unknown) -> Env {
+  Env::from_raw(value.value().env)
 }
 
 fn encode_string(env: &Env, value: &str, encoding: &str) -> Result<Vec<u8>> {

@@ -3,8 +3,10 @@
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
+mod args;
 mod buffer_helpers;
 mod dynamic_library;
+mod errors;
 mod ffi_callback;
 mod ffi_function;
 mod memory;

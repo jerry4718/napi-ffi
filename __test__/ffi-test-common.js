@@ -1,13 +1,16 @@
-'use strict';
+import fs from 'node:fs'
+import path from 'node:path'
 
-const common = require('./common');
-const fs = require('node:fs');
-const path = require('node:path');
+const testDir = path.join(process.cwd(), '__test__');
+const common = {
+  buildType: process.env.BUILDTYPE || 'Debug',
+  skipIfFFIMissing() {},
+};
 
 common.skipIfFFIMissing();
 
 const fixtureBuildDir = path.join(
-  __dirname,
+  testDir,
   'fixture_library',
   'build',
   common.buildType,
@@ -87,7 +90,7 @@ function cString(value) {
   return Buffer.from(`${value}\0`);
 }
 
-module.exports = {
+export {
   cString,
   fixtureSymbols,
   libraryPath,

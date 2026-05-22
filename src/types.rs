@@ -366,10 +366,10 @@ pub fn validate_pointer_span(ptr: usize, offset: usize, length: usize) -> Result
     ));
   }
   let start = ptr + offset;
-  if length > 0 && length - 1 > usize::MAX - start {
+  if length > 0 && length > usize::MAX - start {
     return Err(Error::new(
       Status::InvalidArg,
-      "The pointer and length exceed the platform address range".to_string(),
+      "The accessed range exceeds the platform address range".to_string(),
     ));
   }
   Ok(())

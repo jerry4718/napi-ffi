@@ -18,11 +18,11 @@ pub struct ParsedSignature {
 /// Parse a function signature from a JS object.
 /// Mirrors node:ffi's `ParseFunctionSignature` in `src/ffi/types.cc`.
 pub fn parse_function_signature(name: &str, sig: &Object) -> Result<ParsedSignature> {
-  let has_returns = sig.get::<Unknown>("returns")?.is_some();
-  let has_return = sig.get::<Unknown>("return")?.is_some();
-  let has_result = sig.get::<Unknown>("result")?.is_some();
-  let has_parameters = sig.get::<Unknown>("parameters")?.is_some();
-  let has_arguments = sig.get::<Unknown>("arguments")?.is_some();
+  let has_returns = has_property(sig, "returns")?;
+  let has_return = has_property(sig, "return")?;
+  let has_result = has_property(sig, "result")?;
+  let has_parameters = has_property(sig, "parameters")?;
+  let has_arguments = has_property(sig, "arguments")?;
 
   // Validate: at most one of returns/return/result
   let return_key_count = has_returns as u8 + has_return as u8 + has_result as u8;
@@ -52,7 +52,7 @@ pub fn parse_function_signature(name: &str, sig: &Object) -> Result<ParsedSignat
     } else {
       "result"
     };
-    get_string_property(sig, key)?.ok_or_else(|| {
+    get_return_type_property(sig, key, name)?.ok_or_else(|| {
       Error::new(
         Status::InvalidArg,
         format!("Function signature of {name} must have a string return type"),
@@ -98,7 +98,19 @@ pub fn parse_function_signature(name: &str, sig: &Object) -> Result<ParsedSignat
   })
 }
 
-fn get_string_property(sig: &Object, key: &str) -> Result<Option<String>> {
+fn has_property(obj: &Object, key: &str) -> Result<bool> {
+  let mut key_value = std::ptr::null_mut();
+  check_status!(unsafe {
+    napi::sys::napi_create_string_utf8(obj.value().env, key.as_ptr().cast(), key.len() as isize, &mut key_value)
+  })?;
+  let mut result = false;
+  check_pending_exception!(obj.value().env, unsafe {
+    napi::sys::napi_has_property(obj.value().env, obj.raw(), key_value, &mut result)
+  })?;
+  Ok(result)
+}
+
+fn get_return_type_property(sig: &Object, key: &str, name: &str) -> Result<Option<String>> {
   let Some(value) = sig.get::<Unknown>(key)? else {
     return Ok(None);
   };
@@ -109,7 +121,7 @@ fn get_string_property(sig: &Object, key: &str) -> Result<Option<String>> {
     ));
   }
   let string = value.coerce_to_string()?.into_utf8()?.as_str()?.to_owned();
-  reject_null_bytes(&string, &format!("Signature property '{key}'"))?;
+  reject_null_bytes(&string, &format!("Return value type of function {name}"))?;
   Ok(Some(string))
 }
 

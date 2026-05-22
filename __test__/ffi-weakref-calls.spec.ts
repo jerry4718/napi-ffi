@@ -1,6 +1,7 @@
 import test from 'ava'
 import { createRequire } from 'node:module'
 const require = createRequire(import.meta.url)
+const assert = require('node:assert')
 // Flags:  --expose-gc
 const { skipIfFFIMissing } = require('./common');
 skipIfFFIMissing();

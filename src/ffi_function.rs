@@ -4,6 +4,7 @@ use libffi::middle::{arg, Cif, Ret, Type};
 use napi::bindgen_prelude::*;
 use napi::Env;
 
+use crate::errors::{throw_coded_error, JsErrorKind};
 use crate::signature::ParsedSignature;
 use crate::types::{marshal_c_to_js, marshal_js_to_c, FFIType};
 
@@ -50,13 +51,15 @@ impl FFIFunction {
 
     let expected_args = self.arg_types.len();
     if args.len() != expected_args {
-      return Err(Error::new(
-        Status::InvalidArg,
+      return throw_coded_error(
+        env,
+        JsErrorKind::TypeError,
+        "ERR_INVALID_ARG_VALUE",
         format!(
           "Invalid argument count: expected {expected_args}, got {}",
           args.len()
         ),
-      ));
+      );
     }
 
     // Marshal JS arguments to C-compatible storage
@@ -64,14 +67,26 @@ impl FFIFunction {
     let mut string_keepalive: Vec<std::ffi::CString> = Vec::new();
 
     for (i, (arg, ffitype)) in args.iter().zip(self.arg_types.iter()).enumerate() {
-      if let Some(s) = marshal_js_to_c(env, arg, *ffitype, i, &mut values[i])? {
+      let marshaled = match marshal_js_to_c(env, arg, *ffitype, i, &mut values[i]) {
+        Ok(value) => value,
+        Err(error) if error.status == Status::InvalidArg => {
+          return throw_coded_error(env, JsErrorKind::TypeError, "ERR_INVALID_ARG_VALUE", error.reason.clone());
+        }
+        Err(error) => return Err(error),
+      };
+      if let Some(s) = marshaled {
         // String argument: create CString and store address
-        let cstr = std::ffi::CString::new(s).map_err(|e| {
-          Error::new(
-            Status::InvalidArg,
-            format!("Argument {i} must not contain null bytes: {e}"),
-          )
-        })?;
+        let cstr = match std::ffi::CString::new(s) {
+          Ok(value) => value,
+          Err(error) => {
+            return throw_coded_error(
+              env,
+              JsErrorKind::TypeError,
+              "ERR_INVALID_ARG_VALUE",
+              format!("Argument {i} must not contain null bytes: {error}"),
+            );
+          }
+        };
         values[i] = cstr.as_ptr() as u64;
         string_keepalive.push(cstr);
       }

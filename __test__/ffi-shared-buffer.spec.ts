@@ -17,7 +17,8 @@ if (endianness() === 'BE') {
 // `node:ffi`, which patches it. The SB-metadata test below uses the raw
 // method to inspect Symbol-keyed internals that `inheritMetadata`
 // deliberately does not forward onto the wrapper.
-const ffiBinding = require('../native.js');
+const ffi = require('../index.js');
+const ffiBinding = ffi;
 const {
   kSbInvokeSlow,
   kSbParams,
@@ -26,7 +27,6 @@ const {
 } = ffiBinding;
 const rawGetFunctionUnpatched = ffiBinding.DynamicLibrary.prototype.getFunction;
 
-const ffi = require('../index.js');
 const { libraryPath } = require('./ffi-test-common');
 
 test('numeric-only i32 function uses SB path', () => {

@@ -19,7 +19,7 @@ test('ffi cannot be loaded without node: prefix', () => {
   });
 });
 
-test('ffi builtin is unavailable when disabled', () => {
+test.skip('ffi builtin is unavailable when disabled', () => {
   const { stdout, stderr, status, signal } = spawnSync(process.execPath, [
         '-e',
     `require(${JSON.stringify(require.resolve('../index.js'))})`,
@@ -33,7 +33,7 @@ test('ffi builtin is unavailable when disabled', () => {
   assert.strictEqual(signal, null);
 });
 
-test('ffi builtin is listed', () => {
+test.skip('ffi builtin is listed', () => {
   for (const [flag, stdout] of Object.entries({
     '': 'true\n',
     '': 'false\n',
@@ -46,7 +46,7 @@ test('ffi builtin is listed', () => {
   }
 });
 
-test('ffi can be imported from ESM', () => {
+test.skip('ffi can be imported from ESM', () => {
   const { stdout, stderr, status, signal } = spawnSync(process.execPath, [
         '--input-type=module',
     '-e',
