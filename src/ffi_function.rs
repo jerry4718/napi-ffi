@@ -70,7 +70,12 @@ impl FFIFunction {
       let marshaled = match marshal_js_to_c(env, arg, *ffitype, i, &mut values[i]) {
         Ok(value) => value,
         Err(error) if error.status == Status::InvalidArg => {
-          return throw_coded_error(env, JsErrorKind::TypeError, "ERR_INVALID_ARG_VALUE", error.reason.clone());
+          return throw_coded_error(
+            env,
+            JsErrorKind::TypeError,
+            "ERR_INVALID_ARG_VALUE",
+            error.reason.clone(),
+          );
         }
         Err(error) => return Err(error),
       };
@@ -101,16 +106,28 @@ impl FFIFunction {
     let code = CodePtr::from_ptr(self.ptr as *const std::ffi::c_void);
 
     if self.return_type == FFIType::Void {
-      unsafe {
-        self.cif.call_return_into(code, &ffi_args, Ret::void());
-      }
+      call_ffi_void(&self.cif, code, &ffi_args);
       ().into_unknown(env)
     } else {
-      unsafe {
-        let ret = Ret::new(&mut ret_storage[0]);
-        self.cif.call_return_into(code, &ffi_args, ret);
-      }
+      call_ffi_return(&self.cif, code, &ffi_args, &mut ret_storage[0]);
       marshal_c_to_js(env, &ret_storage[0], self.return_type)
     }
+  }
+}
+
+fn call_ffi_void(cif: &Cif, code: CodePtr, args: &[libffi::middle::Arg]) {
+  // SAFETY: the DynamicLibrary symbol address and ParsedSignature-derived CIF define the ABI
+  // contract. Callers already marshaled every JS argument into storage matching the declared type.
+  unsafe {
+    cif.call_return_into(code, args, Ret::void());
+  }
+}
+
+fn call_ffi_return(cif: &Cif, code: CodePtr, args: &[libffi::middle::Arg], storage: &mut u64) {
+  // SAFETY: storage points to the return slot reserved by invoke(), and the CIF return type was
+  // derived from the parsed signature. libffi writes the declared return representation there.
+  unsafe {
+    let ret = Ret::new(storage);
+    cif.call_return_into(code, args, ret);
   }
 }

@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{RefCell, RefMut};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -10,6 +10,7 @@ use napi::{Env, JsValue, Property, PropertyAttributes, Unknown, ValueType};
 use crate::ffi_callback::FFICallbackOwned;
 use crate::ffi_function::FFIFunction;
 use crate::signature::parse_function_signature;
+use crate::types::get_validated_pointer_with_error;
 
 /// Internal state owned by the JS DynamicLibrary instance.
 struct DynamicLibraryInner {
@@ -18,6 +19,39 @@ struct DynamicLibraryInner {
   symbols: HashMap<String, usize>,
   functions: HashMap<String, Rc<RefCell<FFIFunction>>>,
   callbacks: HashMap<usize, FFICallbackOwned>,
+}
+
+impl DynamicLibraryInner {
+  fn closed_library_error() -> Error {
+    Error::new(Status::GenericFailure, "Library is closed".to_string())
+  }
+
+  fn ensure_open(&self) -> Result<()> {
+    self
+      .library
+      .as_ref()
+      .ok_or_else(Self::closed_library_error)?;
+    Ok(())
+  }
+
+  fn library(&self) -> Result<&libloading::Library> {
+    self.library.as_ref().ok_or_else(Self::closed_library_error)
+  }
+}
+
+fn ensure_cached_function_signature(
+  name: &str,
+  existing: &Rc<RefCell<FFIFunction>>,
+  parsed: &crate::signature::ParsedSignature,
+) -> Result<()> {
+  let ex = existing.borrow();
+  if ex.return_type != parsed.return_type || ex.arg_types != parsed.arg_types {
+    return Err(Error::new(
+      Status::InvalidArg,
+      format!("Function {name} was already requested with a different signature"),
+    ));
+  }
+  Ok(())
 }
 
 /// DynamicLibrary class — mirrors node:ffi's DynamicLibrary.
@@ -108,16 +142,11 @@ impl DynamicLibrary {
   }
 
   fn resolve_symbol(inner: &mut DynamicLibraryInner, name: &str) -> Result<usize> {
-    if inner.library.is_none() {
-      return Err(Error::new(
-        Status::GenericFailure,
-        "Library is closed".to_string(),
-      ));
-    }
+    inner.ensure_open()?;
     if let Some(&ptr) = inner.symbols.get(name) {
       return Ok(ptr);
     }
-    let lib = inner.library.as_ref().unwrap();
+    let lib = inner.library()?;
     let sym: libloading::Symbol<*mut std::ffi::c_void> = unsafe { lib.get(name.as_bytes()) }
       .map_err(|e| Error::new(Status::GenericFailure, format!("dlsym failed: {e}")))?;
     let ptr = *sym as usize;
@@ -136,12 +165,7 @@ impl DynamicLibrary {
   #[napi]
   pub fn get_symbols<'env>(&self, env: &'env Env) -> Result<Object<'env>> {
     let inner = self.inner.borrow();
-    if inner.library.is_none() {
-      return Err(Error::new(
-        Status::GenericFailure,
-        "Library is closed".to_string(),
-      ));
-    }
+    inner.ensure_open()?;
     let mut obj = create_null_prototype_object(env)?;
     for (name, &ptr) in &inner.symbols {
       obj.set(name, BigInt::from(ptr as u64))?;
@@ -160,32 +184,20 @@ impl DynamicLibrary {
     let parsed = parse_function_signature(&name, &sig)?;
 
     let mut inner = self.inner.borrow_mut();
-    if inner.library.is_none() {
-      return Err(Error::new(
-        Status::GenericFailure,
-        "Library is closed".to_string(),
-      ));
+    inner.ensure_open()?;
+    let (ffifn, should_cache) = Self::prepare_function(&mut inner, &name, &parsed)?;
+    if should_cache {
+      inner.functions.insert(name.clone(), ffifn.clone());
     }
-
-    if let Some(existing) = inner.functions.get(&name) {
-      let ex = existing.borrow();
-      if ex.return_type != parsed.return_type || ex.arg_types != parsed.arg_types {
-        return Err(Error::new(
-          Status::InvalidArg,
-          format!("Function {name} was already requested with a different signature"),
-        ));
-      }
-      return create_js_function_wrapper(env, &name, existing.clone());
-    }
-
-    let ptr = Self::resolve_symbol(&mut inner, &name)?;
-    let ffifn = Rc::new(RefCell::new(FFIFunction::new(ptr, &parsed)?));
-    inner.functions.insert(name.clone(), ffifn.clone());
     create_js_function_wrapper(env, &name, ffifn)
   }
 
   #[napi]
-  pub fn get_functions<'env>(&self, env: &'env Env, definitions: Option<Unknown>) -> Result<Object<'env>> {
+  pub fn get_functions<'env>(
+    &self,
+    env: &'env Env,
+    definitions: Option<Unknown>,
+  ) -> Result<Object<'env>> {
     let mut obj = create_null_prototype_object(env)?;
 
     if let Some(defs_value) = definitions {
@@ -200,12 +212,7 @@ impl DynamicLibrary {
       // Phase 1: prepare all functions without mutating the function cache until every definition succeeds.
       {
         let mut inner = self.inner.borrow_mut();
-        if inner.library.is_none() {
-          return Err(Error::new(
-            Status::GenericFailure,
-            "Library is closed".to_string(),
-          ));
-        }
+        inner.ensure_open()?;
 
         for i in 0..keys.get_array_length_unchecked()? {
           let key: Unknown = keys.get_element(i)?;
@@ -214,32 +221,25 @@ impl DynamicLibrary {
           let sig_val: Unknown = match defs.get::<Unknown>(&name)? {
             Some(value) => value,
             None => {
-              env.throw_type_error(&format!("Signature of function {name} must be an object"), None)?;
+              env.throw_type_error(
+                &format!("Signature of function {name} must be an object"),
+                None,
+              )?;
               return Err(Error::new(Status::PendingException, "".to_string()));
             }
           };
           if sig_val.get_type()? != ValueType::Object || is_array(env.raw(), sig_val.raw())? {
-            env.throw_type_error(&format!("Signature of function {name} must be an object"), None)?;
+            env.throw_type_error(
+              &format!("Signature of function {name} must be an object"),
+              None,
+            )?;
             return Err(Error::new(Status::PendingException, "".to_string()));
           }
           let sig_obj = Object::from_unknown(sig_val)?;
           let parsed = parse_function_signature(&name, &sig_obj)?;
 
-          if let Some(existing) = inner.functions.get(&name) {
-            let ex = existing.borrow();
-            if ex.return_type != parsed.return_type || ex.arg_types != parsed.arg_types {
-              return Err(Error::new(
-                Status::InvalidArg,
-                format!("Function {name} was already requested with a different signature"),
-              ));
-            }
-            pending.push((name, existing.clone(), false));
-            continue;
-          }
-
-          let ptr = Self::resolve_symbol(&mut inner, &name)?;
-          let ffifn = Rc::new(RefCell::new(FFIFunction::new(ptr, &parsed)?));
-          pending.push((name, ffifn, true));
+          let (ffifn, should_cache) = Self::prepare_function(&mut inner, &name, &parsed)?;
+          pending.push((name, ffifn, should_cache));
         }
 
         for (name, ffifn, should_cache) in &pending {
@@ -273,12 +273,7 @@ impl DynamicLibrary {
     fn_opt: Option<Unknown>,
   ) -> Result<BigInt> {
     let mut inner = self.inner.borrow_mut();
-    if inner.library.is_none() {
-      return Err(Error::new(
-        Status::GenericFailure,
-        "Library is closed".to_string(),
-      ));
-    }
+    inner.ensure_open()?;
 
     let (parsed, js_fn) = if let Some(js_fn) = fn_opt {
       let sig_obj = match sig_or_fn.get_type()? {
@@ -320,63 +315,58 @@ impl DynamicLibrary {
 
   #[napi]
   pub fn unregister_callback(&self, _env: &Env, ptr: BigInt) -> Result<()> {
-    let mut inner = self.inner.borrow_mut();
-    if inner.library.is_none() {
-      return Err(Error::new(
-        Status::GenericFailure,
-        "Library is closed".to_string(),
-      ));
-    }
-    let addr = get_validated_pointer_compat(&ptr, "first argument")?;
+    let addr = get_validated_callback_pointer(&ptr)?;
+    let mut inner = self.open_inner_mut()?;
     if inner.callbacks.remove(&addr).is_none() {
-      return Err(Error::new(
-        Status::InvalidArg,
-        "Callback not found".to_string(),
-      ));
+      return Err(callback_not_found_error());
     }
     Ok(())
   }
 
   #[napi]
   pub fn ref_callback(&self, env: &Env, ptr: BigInt) -> Result<()> {
-    let mut inner = self.inner.borrow_mut();
-    if inner.library.is_none() {
-      return Err(Error::new(
-        Status::GenericFailure,
-        "Library is closed".to_string(),
-      ));
-    }
-    let addr = get_validated_pointer_compat(&ptr, "first argument")?;
-    if let Some(cb) = inner.callbacks.get_mut(&addr) {
-      cb.ref_js_fn(env)?;
-      Ok(())
-    } else {
-      Err(Error::new(
-        Status::InvalidArg,
-        "Callback not found".to_string(),
-      ))
-    }
+    self.with_callback_mut(&ptr, |cb| cb.ref_js_fn(env))
   }
 
   #[napi]
   pub fn unref_callback(&self, env: &Env, ptr: BigInt) -> Result<()> {
-    let mut inner = self.inner.borrow_mut();
-    if inner.library.is_none() {
-      return Err(Error::new(
-        Status::GenericFailure,
-        "Library is closed".to_string(),
-      ));
+    self.with_callback_mut(&ptr, |cb| cb.unref_js_fn(env))
+  }
+}
+
+impl DynamicLibrary {
+  fn prepare_function(
+    inner: &mut DynamicLibraryInner,
+    name: &str,
+    parsed: &crate::signature::ParsedSignature,
+  ) -> Result<(Rc<RefCell<FFIFunction>>, bool)> {
+    if let Some(existing) = inner.functions.get(name) {
+      ensure_cached_function_signature(name, existing, parsed)?;
+      return Ok((existing.clone(), false));
     }
-    let addr = get_validated_pointer_compat(&ptr, "first argument")?;
-    if let Some(cb) = inner.callbacks.get_mut(&addr) {
-      cb.unref_js_fn(env)?;
-      Ok(())
-    } else {
-      Err(Error::new(
-        Status::InvalidArg,
-        "Callback not found".to_string(),
-      ))
-    }
+
+    let ptr = Self::resolve_symbol(inner, name)?;
+    Ok((Rc::new(RefCell::new(FFIFunction::new(ptr, parsed)?)), true))
+  }
+
+  fn open_inner_mut(&self) -> Result<RefMut<'_, DynamicLibraryInner>> {
+    let inner = self.inner.borrow_mut();
+    inner.ensure_open()?;
+    Ok(inner)
+  }
+
+  fn with_callback_mut<T>(
+    &self,
+    ptr: &BigInt,
+    f: impl FnOnce(&mut FFICallbackOwned) -> Result<T>,
+  ) -> Result<T> {
+    let addr = get_validated_callback_pointer(ptr)?;
+    let mut inner = self.open_inner_mut()?;
+    let callback = inner
+      .callbacks
+      .get_mut(&addr)
+      .ok_or_else(callback_not_found_error)?;
+    f(callback)
   }
 }
 
@@ -396,13 +386,13 @@ fn create_null_prototype_object<'env>(env: &'env Env) -> Result<Object<'env>> {
 
   check_status!(unsafe { napi::sys::napi_get_global(raw_env, &mut global) })?;
   check_status!(unsafe {
-    napi::sys::napi_get_named_property(raw_env, global, b"Object\0".as_ptr().cast(), &mut object_ctor)
+    napi::sys::napi_get_named_property(raw_env, global, c"Object".as_ptr().cast(), &mut object_ctor)
   })?;
   check_status!(unsafe {
     napi::sys::napi_get_named_property(
       raw_env,
       object_ctor,
-      b"setPrototypeOf\0".as_ptr().cast(),
+      c"setPrototypeOf".as_ptr().cast(),
       &mut set_prototype_of,
     )
   })?;
@@ -424,34 +414,36 @@ fn create_null_prototype_object<'env>(env: &'env Env) -> Result<Object<'env>> {
 }
 
 fn validate_function_name(name: &str) -> Result<()> {
-  if name.contains('\0') {
-    return Err(Error::new(
-      Status::InvalidArg,
-      "Function name must not contain null bytes".to_string(),
-    ));
-  }
-  Ok(())
+  validate_no_null_bytes(name, "Function name must not contain null bytes")
 }
 
 fn validate_symbol_name(name: &str) -> Result<()> {
-  if name.contains('\0') {
-    return Err(Error::new(
-      Status::InvalidArg,
-      "Symbol name must not contain null bytes".to_string(),
-    ));
+  validate_no_null_bytes(name, "Symbol name must not contain null bytes")
+}
+
+fn validate_no_null_bytes(value: &str, message: &str) -> Result<()> {
+  if value.contains('\0') {
+    return Err(Error::new(Status::InvalidArg, message.to_string()));
   }
   Ok(())
 }
 
-fn get_validated_pointer_compat(value: &BigInt, label: &str) -> Result<usize> {
-  let (signed, addr, lossless) = value.get_u64();
-  if signed || !lossless || addr > usize::MAX as u64 {
-    return Err(Error::new(
-      Status::InvalidArg,
-      format!("The {label} must be a non-negative bigint"),
-    ));
-  }
-  Ok(addr as usize)
+fn get_validated_callback_pointer(value: &BigInt) -> Result<usize> {
+  get_validated_pointer_with_error(value, "The first argument must be a non-negative bigint")
+    .map_err(|error| {
+      if error.reason.contains("platform pointer range") {
+        Error::new(
+          Status::InvalidArg,
+          "The first argument must be a non-negative bigint".to_string(),
+        )
+      } else {
+        error
+      }
+    })
+}
+
+fn callback_not_found_error() -> Error {
+  Error::new(Status::InvalidArg, "Callback not found".to_string())
 }
 
 /// Create a JS function wrapper that invokes an FFIFunction.
@@ -505,4 +497,3 @@ fn create_js_function_wrapper<'env>(
 
   Ok(js_fn)
 }
-

@@ -1,7 +1,8 @@
-use std::ffi::c_void;
-
 use libffi::middle::Type;
 use napi::bindgen_prelude::*;
+
+use crate::args::{expect_bigint, read_number, validate_f64_integer_range};
+use crate::buffer_helpers::get_buffer_like_pointer_and_len;
 /// Represents the complete set of C types supported by node:ffi.
 /// Maps to libffi::middle::Type for CIF creation and holds metadata for JS↔C marshalling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,31 +75,61 @@ impl FFIType {
 /// Return value storage that can hold any FFI type.
 pub type FFIStorage = u64;
 
-fn read_number(value: &Unknown, error: impl Into<String>) -> Result<f64> {
+fn read_number_arg(value: &Unknown, error: impl Into<String>) -> Result<f64> {
   if value.get_type()? != ValueType::Number {
     return Err(Error::new(Status::InvalidArg, error.into()));
   }
+  read_number(value)
+}
 
-  let mut out = 0.0;
-  check_status!(unsafe {
-    napi::sys::napi_get_value_double(value.value().env, value.raw(), &mut out)
-  })?;
-  Ok(out)
+fn read_bigint_arg(value: &Unknown, error: impl Into<String>) -> Result<BigInt> {
+  if value.get_type()? != ValueType::BigInt {
+    return Err(Error::new(Status::InvalidArg, error.into()));
+  }
+  unsafe { value.cast() }
+}
+
+#[derive(Clone, Copy)]
+enum NumberArgRange {
+  Signed { min: i64, max: i64 },
+  Unsigned { max: u64 },
+}
+
+impl NumberArgRange {
+  fn validate(self, value: f64, error: impl Into<String>) -> Result<FFIStorage> {
+    match self {
+      NumberArgRange::Signed { min, max } => {
+        Ok(validate_signed_int(value, min, max, error)? as FFIStorage)
+      }
+      NumberArgRange::Unsigned { max } => {
+        Ok(validate_unsigned_int(value, max, error)? as FFIStorage)
+      }
+    }
+  }
+}
+
+fn marshal_number_arg(
+  arg: &Unknown,
+  index: usize,
+  label: &str,
+  range: NumberArgRange,
+  storage: &mut FFIStorage,
+) -> Result<Option<String>> {
+  let error = format!("Argument {index} must be {label}");
+  let value = read_number_arg(arg, error.clone())?;
+  *storage = range.validate(value, error)?;
+  Ok(None)
 }
 
 /// Validate a JS Number argument to a signed integer in range [min, max].
 pub fn validate_signed_int(n: f64, min: i64, max: i64, error: impl Into<String>) -> Result<i64> {
-  if !n.is_finite() || n.fract() != 0.0 || n < (min as f64) || n > (max as f64) {
-    return Err(Error::new(Status::InvalidArg, error.into()));
-  }
+  validate_f64_integer_range(n, min as f64, max as f64, error)?;
   Ok(n as i64)
 }
 
 /// Validate a JS Number argument to an unsigned integer in range [0, max].
 pub fn validate_unsigned_int(n: f64, max: u64, error: impl Into<String>) -> Result<u64> {
-  if !n.is_finite() || n.fract() != 0.0 || n < 0.0 || n > (max as f64) {
-    return Err(Error::new(Status::InvalidArg, error.into()));
-  }
+  validate_f64_integer_range(n, 0.0, max as f64, error)?;
   Ok(n as u64)
 }
 
@@ -116,83 +147,90 @@ pub fn marshal_js_to_c(
       *storage = 0;
       Ok(None)
     }
-    FFIType::Sint8 => {
-      let val = read_number(arg, format!("Argument {index} must be an int8"))?;
-      let n = validate_signed_int(val, i8::MIN as i64, i8::MAX as i64, format!("Argument {index} must be an int8"))?;
-      *storage = (n as i8) as FFIStorage;
-      Ok(None)
-    }
-    FFIType::Uint8 => {
-      let val = read_number(arg, format!("Argument {index} must be a uint8"))?;
-      let n = validate_unsigned_int(val, u8::MAX as u64, format!("Argument {index} must be a uint8"))?;
-      *storage = (n as u8) as FFIStorage;
-      Ok(None)
-    }
-    FFIType::Sint16 => {
-      let val = read_number(arg, format!("Argument {index} must be an int16"))?;
-      let n = validate_signed_int(val, i16::MIN as i64, i16::MAX as i64, format!("Argument {index} must be an int16"))?;
-      *storage = (n as i16) as FFIStorage;
-      Ok(None)
-    }
-    FFIType::Uint16 => {
-      let val = read_number(arg, format!("Argument {index} must be a uint16"))?;
-      let n = validate_unsigned_int(val, u16::MAX as u64, format!("Argument {index} must be a uint16"))?;
-      *storage = (n as u16) as FFIStorage;
-      Ok(None)
-    }
-    FFIType::Sint32 => {
-      let val = read_number(arg, format!("Argument {index} must be an int32"))?;
-      let n = validate_signed_int(val, i32::MIN as i64, i32::MAX as i64, format!("Argument {index} must be an int32"))?;
-      *storage = (n as i32) as FFIStorage;
-      Ok(None)
-    }
-    FFIType::Uint32 => {
-      let val = read_number(arg, format!("Argument {index} must be a uint32"))?;
-      let n = validate_unsigned_int(val, u32::MAX as u64, format!("Argument {index} must be a uint32"))?;
-      *storage = (n as u32) as FFIStorage;
-      Ok(None)
-    }
+    FFIType::Sint8 => marshal_number_arg(
+      arg,
+      index,
+      "an int8",
+      NumberArgRange::Signed {
+        min: i8::MIN as i64,
+        max: i8::MAX as i64,
+      },
+      storage,
+    ),
+    FFIType::Uint8 => marshal_number_arg(
+      arg,
+      index,
+      "a uint8",
+      NumberArgRange::Unsigned {
+        max: u8::MAX as u64,
+      },
+      storage,
+    ),
+    FFIType::Sint16 => marshal_number_arg(
+      arg,
+      index,
+      "an int16",
+      NumberArgRange::Signed {
+        min: i16::MIN as i64,
+        max: i16::MAX as i64,
+      },
+      storage,
+    ),
+    FFIType::Uint16 => marshal_number_arg(
+      arg,
+      index,
+      "a uint16",
+      NumberArgRange::Unsigned {
+        max: u16::MAX as u64,
+      },
+      storage,
+    ),
+    FFIType::Sint32 => marshal_number_arg(
+      arg,
+      index,
+      "an int32",
+      NumberArgRange::Signed {
+        min: i32::MIN as i64,
+        max: i32::MAX as i64,
+      },
+      storage,
+    ),
+    FFIType::Uint32 => marshal_number_arg(
+      arg,
+      index,
+      "a uint32",
+      NumberArgRange::Unsigned {
+        max: u32::MAX as u64,
+      },
+      storage,
+    ),
     FFIType::Sint64 => {
-      let val: BigInt = unsafe { arg.cast() }.map_err(|_| {
-        Error::new(
-          Status::InvalidArg,
-          format!("Argument {index} must be an int64 (bigint)"),
-        )
-      })?;
+      let error = format!("Argument {index} must be an int64");
+      let val = read_bigint_arg(arg, error.clone())?;
       let (value, lossless) = val.get_i64();
       if !lossless {
-        return Err(Error::new(
-          Status::InvalidArg,
-          format!("Argument {index} must be an int64"),
-        ));
+        return Err(Error::new(Status::InvalidArg, error));
       }
       *storage = value as FFIStorage;
       Ok(None)
     }
     FFIType::Uint64 => {
-      let val: BigInt = unsafe { arg.cast() }.map_err(|_| {
-        Error::new(
-          Status::InvalidArg,
-          format!("Argument {index} must be a uint64 (bigint)"),
-        )
-      })?;
+      let error = format!("Argument {index} must be a uint64");
+      let val = read_bigint_arg(arg, error.clone())?;
       let (_signed, value, lossless) = val.get_u64();
       if !lossless {
-        return Err(Error::new(
-          Status::InvalidArg,
-          format!("Argument {index} must be a uint64"),
-        ));
+        return Err(Error::new(Status::InvalidArg, error));
       }
       *storage = value;
       Ok(None)
     }
     FFIType::Float => {
-      let n = read_number(arg, format!("Argument {index} must be a float"))? as f32;
+      let n = read_number_arg(arg, format!("Argument {index} must be a float"))? as f32;
       *storage = n.to_bits() as FFIStorage;
       Ok(None)
     }
     FFIType::Double => {
-      let n = read_number(arg, format!("Argument {index} must be a double"))?;
+      let n = read_number_arg(arg, format!("Argument {index} must be a double"))?;
       *storage = n.to_bits();
       Ok(None)
     }
@@ -206,25 +244,15 @@ pub fn marshal_js_to_c(
         return Ok(Some(s));
       }
       if arg.get_type()? == ValueType::BigInt {
-        let val: BigInt = unsafe { arg.cast() }.map_err(|_| {
-          Error::new(
-            Status::InvalidArg,
-            format!("Argument {index} must be a non-negative pointer bigint"),
-          )
-        })?;
-        let (signed, value, lossless) = val.get_u64();
-        if signed || !lossless || value > usize::MAX as u64 {
-          return Err(Error::new(
-            Status::InvalidArg,
-            format!("Argument {index} must be a non-negative pointer bigint"),
-          ));
-        }
-        *storage = value;
+        let val = expect_bigint(arg, &format!("argument {index}"))?;
+        *storage = get_validated_pointer_with_error(
+          &val,
+          format!("Argument {index} must be a non-negative pointer bigint"),
+        )? as FFIStorage;
         return Ok(None);
       }
-      if is_buffer_or_typedarray(arg) {
-        let ptr = get_pointer_from_arg(arg)?;
-        *storage = ptr;
+      if let Some((ptr, _)) = get_buffer_like_pointer_and_len(arg) {
+        *storage = ptr as FFIStorage;
         return Ok(None);
       }
       Err(Error::new(
@@ -243,34 +271,13 @@ pub fn marshal_c_to_js<'env>(
 ) -> Result<Unknown<'env>> {
   match ffitype {
     FFIType::Void => ().into_unknown(env),
-    FFIType::Sint8 => {
-      let val = unsafe { *(storage as *const FFIStorage as *const libffi::low::ffi_sarg) };
-      (val as i8 as i32).into_unknown(env)
-    }
-    FFIType::Uint8 => {
-      let val = unsafe { *(storage as *const FFIStorage as *const libffi::low::ffi_arg) };
-      (val as u8 as u32).into_unknown(env)
-    }
-    FFIType::Sint16 => {
-      let val = unsafe { *(storage as *const FFIStorage as *const libffi::low::ffi_sarg) };
-      (val as i16 as i32).into_unknown(env)
-    }
-    FFIType::Uint16 => {
-      let val = unsafe { *(storage as *const FFIStorage as *const libffi::low::ffi_arg) };
-      (val as u16 as u32).into_unknown(env)
-    }
-    FFIType::Sint32 => {
-      let val = unsafe { *(storage as *const FFIStorage as *const libffi::low::ffi_sarg) };
-      (val as i32).into_unknown(env)
-    }
-    FFIType::Uint32 => {
-      let val = unsafe { *(storage as *const FFIStorage as *const libffi::low::ffi_arg) };
-      (val as u32).into_unknown(env)
-    }
-    FFIType::Sint64 => {
-      let val = unsafe { *(storage as *const FFIStorage as *const i64) };
-      BigInt::from(val).into_unknown(env)
-    }
+    FFIType::Sint8 => (read_return_sarg(storage) as i8 as i32).into_unknown(env),
+    FFIType::Uint8 => (read_return_arg(storage) as u8 as u32).into_unknown(env),
+    FFIType::Sint16 => (read_return_sarg(storage) as i16 as i32).into_unknown(env),
+    FFIType::Uint16 => (read_return_arg(storage) as u16 as u32).into_unknown(env),
+    FFIType::Sint32 => (read_return_sarg(storage) as i32).into_unknown(env),
+    FFIType::Uint32 => (read_return_arg(storage) as u32).into_unknown(env),
+    FFIType::Sint64 => BigInt::from(read_return_i64(storage)).into_unknown(env),
     FFIType::Uint64 => BigInt::from(*storage).into_unknown(env),
     FFIType::Float => {
       let bits = *storage as u32;
@@ -288,70 +295,48 @@ pub fn marshal_c_to_js<'env>(
   }
 }
 
-/// Check if argument is a buffer-like type.
-pub fn is_buffer_or_typedarray(arg: &Unknown) -> bool {
-  let arg_type = match arg.get_type() {
-    Ok(t) => t,
-    Err(_) => return false,
-  };
-  arg_type == ValueType::Object
+fn read_return_sarg(storage: &FFIStorage) -> libffi::low::ffi_sarg {
+  // SAFETY: libffi wrote the return value into storage through call_return_into. For promoted
+  // small signed integer returns, libffi stores ffi_sarg-compatible bits in that slot.
+  unsafe { *(storage as *const FFIStorage as *const libffi::low::ffi_sarg) }
 }
 
-/// Get raw pointer from buffer-like argument.
-pub fn get_pointer_from_arg(arg: &Unknown) -> Result<u64> {
-  if arg.is_buffer()? {
-    let mut data = std::ptr::null_mut::<c_void>();
-    let mut len = 0usize;
-    napi::check_status!(unsafe {
-      napi::sys::napi_get_buffer_info(arg.value().env, arg.raw(), &mut data, &mut len)
-    })?;
-    Ok(data as u64)
-  } else if arg.is_arraybuffer()? {
-    let mut data = std::ptr::null_mut::<c_void>();
-    let mut len = 0usize;
-    napi::check_status!(unsafe {
-      napi::sys::napi_get_arraybuffer_info(arg.value().env, arg.raw(), &mut data, &mut len)
-    })?;
-    Ok(data as u64)
-  } else if arg.is_typedarray()? {
-    let mut typedarray_type = 0;
-    let mut len = 0usize;
-    let mut data = std::ptr::null_mut::<c_void>();
-    let mut arraybuffer = std::ptr::null_mut();
-    let mut byte_offset = 0usize;
-    napi::check_status!(unsafe {
-      napi::sys::napi_get_typedarray_info(
-        arg.value().env,
-        arg.raw(),
-        &mut typedarray_type,
-        &mut len,
-        &mut data,
-        &mut arraybuffer,
-        &mut byte_offset,
-      )
-    })?;
-    Ok(data as u64)
-  } else {
-    Err(Error::new(
-      Status::InvalidArg,
-      "Expected Buffer, ArrayBuffer, or TypedArray".to_string(),
-    ))
-  }
+fn read_return_arg(storage: &FFIStorage) -> libffi::low::ffi_arg {
+  // SAFETY: libffi wrote the return value into storage through call_return_into. For promoted
+  // small unsigned integer returns, libffi stores ffi_arg-compatible bits in that slot.
+  unsafe { *(storage as *const FFIStorage as *const libffi::low::ffi_arg) }
+}
+
+fn read_return_i64(storage: &FFIStorage) -> i64 {
+  // SAFETY: libffi wrote an i64 return value into the storage slot for Sint64 signatures.
+  unsafe { *(storage as *const FFIStorage as *const i64) }
 }
 
 /// Convert a BigInt to a validated pointer address.
 pub fn get_validated_pointer(value: &BigInt, label: &str) -> Result<usize> {
+  get_validated_pointer_with_error(value, format!("The {label} must be a non-negative bigint"))
+    .map_err(|error| {
+      if error.reason.contains("platform pointer range") {
+        Error::new(
+          Status::InvalidArg,
+          format!("The {label} exceeds the platform pointer range"),
+        )
+      } else {
+        error
+      }
+    })
+}
+
+pub fn get_validated_pointer_with_error(value: &BigInt, error: impl Into<String>) -> Result<usize> {
+  let error = error.into();
   let (signed, addr, lossless) = value.get_u64();
   if signed || !lossless {
-    return Err(Error::new(
-      Status::InvalidArg,
-      format!("The {label} must be a non-negative bigint"),
-    ));
+    return Err(Error::new(Status::InvalidArg, error));
   }
   if addr > usize::MAX as u64 {
     return Err(Error::new(
       Status::InvalidArg,
-      format!("The {label} exceeds the platform pointer range"),
+      "The pointer exceeds the platform pointer range".to_string(),
     ));
   }
   Ok(addr as usize)

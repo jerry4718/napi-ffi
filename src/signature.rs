@@ -2,6 +2,7 @@ use std::ffi::CString;
 
 use napi::bindgen_prelude::*;
 
+use crate::errors::create_string_utf8;
 use crate::types::FFIType;
 
 /// Parsed function signature from a JS object.
@@ -99,10 +100,7 @@ pub fn parse_function_signature(name: &str, sig: &Object) -> Result<ParsedSignat
 }
 
 fn has_property(obj: &Object, key: &str) -> Result<bool> {
-  let mut key_value = std::ptr::null_mut();
-  check_status!(unsafe {
-    napi::sys::napi_create_string_utf8(obj.value().env, key.as_ptr().cast(), key.len() as isize, &mut key_value)
-  })?;
+  let key_value = create_string_utf8(obj.value().env, key)?;
   let mut result = false;
   check_pending_exception!(obj.value().env, unsafe {
     napi::sys::napi_has_property(obj.value().env, obj.raw(), key_value, &mut result)

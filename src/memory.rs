@@ -2,9 +2,21 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
 use crate::args::{
-  ensure_value_present, expect_bigint_value, validated_float, validated_pointer_and_offset, validated_required_offset,
-  validated_signed_int,
+  ensure_value_present, expect_bigint_value, validated_float, validated_pointer_and_offset,
+  validated_required_offset, validated_signed_int,
 };
+
+fn read_unaligned_at<T: Copy>(ptr: *const u8) -> T {
+  // SAFETY: callers validate that ptr..ptr+size_of::<T>() is a readable platform address range.
+  // Unaligned access is intentional because these memory helpers mirror node:ffi raw pointer reads.
+  unsafe { std::ptr::read_unaligned(ptr.cast::<T>()) }
+}
+
+fn write_unaligned_at<T>(ptr: *mut u8, value: T) {
+  // SAFETY: callers validate that ptr..ptr+size_of::<T>() is a writable platform address range.
+  // Unaligned access is intentional because these memory helpers mirror node:ffi raw pointer writes.
+  unsafe { std::ptr::write_unaligned(ptr.cast::<T>(), value) };
+}
 
 macro_rules! define_get_fn {
   ($name:ident, $ty:ty, $ret_ty:ty) => {
@@ -16,7 +28,7 @@ macro_rules! define_get_fn {
         std::mem::size_of::<$ty>(),
         "The accessed range exceeds the platform address range",
       )?;
-      let val: $ty = unsafe { std::ptr::read(p as *const $ty) };
+      let val: $ty = read_unaligned_at(p);
       Ok(val as $ret_ty)
     }
   };
@@ -32,7 +44,7 @@ macro_rules! define_get_bigint_fn {
         std::mem::size_of::<$ty>(),
         "The accessed range exceeds the platform address range",
       )?;
-      let val: $ty = unsafe { std::ptr::read(p as *const $ty) };
+      let val: $ty = read_unaligned_at(p);
       Ok(BigInt::from(val as i64))
     }
   };
@@ -51,7 +63,7 @@ macro_rules! define_set_int_fn {
         "The accessed range exceeds the platform address range",
       )?;
       let v = validated_signed_int(&value, $min as i128, $max as i128, $label)?;
-      unsafe { std::ptr::write(p as *mut $ty, v as $ty) };
+      write_unaligned_at(p, v as $ty);
       Ok(())
     }
   };
@@ -70,7 +82,7 @@ macro_rules! define_set_float_fn {
         "The accessed range exceeds the platform address range",
       )?;
       let v = validated_float(&value, stringify!($ty))? as $ty;
-      unsafe { std::ptr::write(p as *mut $ty, v) };
+      write_unaligned_at(p, v);
       Ok(())
     }
   };
@@ -93,14 +105,7 @@ define_set_int_fn!(set_int8, i8, i32, -128, 127, "an int8");
 define_set_int_fn!(set_uint8, u8, i32, 0, 255, "a uint8");
 define_set_int_fn!(set_int16, i16, i32, -32768, 32767, "an int16");
 define_set_int_fn!(set_uint16, u16, i32, 0, 65535, "a uint16");
-define_set_int_fn!(
-  set_int32,
-  i32,
-  i32,
-  i32::MIN,
-  i32::MAX,
-  "an int32"
-);
+define_set_int_fn!(set_int32, i32, i32, i32::MIN, i32::MAX, "an int32");
 define_set_int_fn!(set_uint32, u32, u32, 0u32, u32::MAX, "a uint32");
 
 // Set 64-bit functions.
@@ -121,7 +126,7 @@ pub fn set_int64(ptr: BigInt, offset: Unknown, value: Unknown) -> Result<()> {
       "Value must be an int64".to_string(),
     ));
   }
-  unsafe { std::ptr::write(p as *mut i64, v) };
+  write_unaligned_at(p, v);
   Ok(())
 }
 
@@ -142,7 +147,7 @@ pub fn set_uint64(ptr: BigInt, offset: Unknown, value: Unknown) -> Result<()> {
       "Value must be a uint64".to_string(),
     ));
   }
-  unsafe { std::ptr::write(p as *mut u64, v) };
+  write_unaligned_at(p, v);
   Ok(())
 }
 
