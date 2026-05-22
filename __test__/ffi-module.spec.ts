@@ -3,7 +3,6 @@ import { createRequire } from 'node:module'
 const require = createRequire(import.meta.url)
 // Flags: 
 const common = require('./common');
-const { spawnSyncAndAssert } = require('./common/child_process');
 const assert = require('node:assert');
 const { spawnSync } = require('node:child_process');
 
@@ -19,44 +18,45 @@ test('ffi cannot be loaded without node: prefix', () => {
   });
 });
 
-test.skip('ffi builtin is unavailable when disabled', () => {
+test('ffi userland entry can be loaded in a child process', () => {
   const { stdout, stderr, status, signal } = spawnSync(process.execPath, [
-        '-e',
-    `require(${JSON.stringify(require.resolve('../index.js'))})`,
-  ], {
-    encoding: 'utf8',
-  });
-
-  assert.strictEqual(stdout, '');
-  assert.match(stderr, /No such built-in module: node:ffi/);
-  assert.notStrictEqual(status, 0);
-  assert.strictEqual(signal, null);
-});
-
-test.skip('ffi builtin is listed', () => {
-  for (const [flag, stdout] of Object.entries({
-    '': 'true\n',
-    '': 'false\n',
-  })) {
-    spawnSyncAndAssert(process.execPath, [
-      flag,
-      '-p',
-      'require("node:module").builtinModules.includes("node:ffi")',
-    ], { stdout });
-  }
-});
-
-test.skip('ffi can be imported from ESM', () => {
-  const { stdout, stderr, status, signal } = spawnSync(process.execPath, [
-        '--input-type=module',
     '-e',
-    'import * as ffi from "node:ffi"; console.log(typeof ffi.dlopen);',
+    `const ffi = require(${JSON.stringify(require.resolve('../index.js'))}); console.log(typeof ffi.dlopen);`,
   ], {
     encoding: 'utf8',
   });
 
   assert.strictEqual(stdout.trim(), 'function');
-  assert.match(stderr, /ExperimentalWarning: FFI is an experimental feature/);
+  assert.strictEqual(stderr, '');
+  assert.strictEqual(status, 0);
+  assert.strictEqual(signal, null);
+});
+
+test('ffi userland package does not register a node:ffi builtin', () => {
+  const { stdout, stderr, status, signal } = spawnSync(process.execPath, [
+    '-p',
+    `require(${JSON.stringify(require.resolve('../index.js'))}) && require('node:module').builtinModules.includes('node:ffi')`,
+  ], {
+    encoding: 'utf8',
+  });
+
+  assert.strictEqual(stdout, 'false\n');
+  assert.strictEqual(stderr, '');
+  assert.strictEqual(status, 0);
+  assert.strictEqual(signal, null);
+});
+
+test('ffi userland entry can be imported from ESM', () => {
+  const { stdout, stderr, status, signal } = spawnSync(process.execPath, [
+    '--input-type=module',
+    '-e',
+    `import * as ffi from ${JSON.stringify(require.resolve('../index.js'))}; console.log(typeof ffi.dlopen);`,
+  ], {
+    encoding: 'utf8',
+  });
+
+  assert.strictEqual(stdout.trim(), 'function');
+  assert.strictEqual(stderr, '');
   assert.strictEqual(status, 0);
   assert.strictEqual(signal, null);
 });
