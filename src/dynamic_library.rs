@@ -3,6 +3,10 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 
 use libffi::middle::{Arg, CodePtr};
+#[cfg(unix)]
+use libloading::os::unix::Library as UnixLibrary;
+#[cfg(windows)]
+use libloading::os::windows::Library as WindowsLibrary;
 use libloading::Library;
 use napi::bindgen_prelude::*;
 use napi::Env;
@@ -39,19 +43,36 @@ fn pointer_from_bigint(pointer: &BigInt) -> Result<usize> {
       "The pointer must be a non-negative bigint".to_owned(),
     ));
   }
-  usize::try_from(raw)
-    .map_err(|_| Error::new(Status::InvalidArg, "The pointer exceeds the platform address range".to_owned()))
+  usize::try_from(raw).map_err(|_| {
+    Error::new(
+      Status::InvalidArg,
+      "The pointer exceeds the platform address range".to_owned(),
+    )
+  })
 }
 
 #[napi]
 impl DynamicLibrary {
   #[napi(constructor)]
   pub fn new(path: Option<String>) -> Result<Self> {
-    let path_value = path.ok_or_else(|| Error::new(Status::InvalidArg, "null path is not supported yet".to_owned()))?;
-    let library = unsafe { Library::new(&path_value) }
-      .map_err(|error| Error::new(Status::GenericFailure, error.to_string()))?;
+    let (path_value, library) = match path {
+      Some(path_value) => {
+        let library = unsafe { Library::new(&path_value) }
+          .map_err(|error| Error::new(Status::GenericFailure, format!("dlopen failed: {error}")))?;
+        (Some(path_value), library)
+      }
+      None => {
+        #[cfg(unix)]
+        let library: Library = UnixLibrary::this().into();
+        #[cfg(windows)]
+        let library: Library = WindowsLibrary::this()
+          .map(Into::into)
+          .map_err(|error| Error::new(Status::GenericFailure, format!("dlopen failed: {error}")))?;
+        (None, library)
+      }
+    };
     Ok(Self {
-      path: Some(path_value),
+      path: path_value,
       library: Some(library),
       functions: RefCell::new(HashMap::new()),
     })
@@ -63,7 +84,8 @@ impl DynamicLibrary {
   }
 
   fn library(&self) -> Result<&Library> {
-    self.library
+    self
+      .library
       .as_ref()
       .ok_or_else(|| Error::new(Status::GenericFailure, "Library is closed".to_owned()))
   }
@@ -80,7 +102,7 @@ impl DynamicLibrary {
     let pointer = unsafe {
       let raw = library
         .get::<*mut c_void>(symbol.as_bytes())
-        .map_err(|error| Error::new(Status::GenericFailure, error.to_string()))?;
+        .map_err(|error| Error::new(Status::GenericFailure, format!("dlsym failed: {error}")))?;
       *raw as usize as u64
     };
     Ok(BigInt::from(pointer))
@@ -113,7 +135,9 @@ impl DynamicLibrary {
     };
 
     let cache = self.functions.borrow();
-    let binding = cache.get(&symbol).expect("binding must exist after insertion");
+    let binding = cache
+      .get(&symbol)
+      .expect("binding must exist after insertion");
     Ok(CallSpec {
       pointer: BigInt::from(pointer as u64),
       arguments: binding.signature.argument_type_names(),
@@ -123,12 +147,21 @@ impl DynamicLibrary {
   }
 
   #[napi]
-  pub fn invoke<'env>(&self, env: &'env Env, key: String, pointer: BigInt, values: Vec<Unknown<'env>>) -> Result<Unknown<'env>> {
+  pub fn invoke<'env>(
+    &self,
+    env: &'env Env,
+    key: String,
+    pointer: BigInt,
+    values: Vec<Unknown<'env>>,
+  ) -> Result<Unknown<'env>> {
     let pointer = pointer_from_bigint(&pointer)?;
     let cache = self.functions.borrow();
-    let binding = cache
-      .get(&key)
-      .ok_or_else(|| Error::new(Status::InvalidArg, format!("Function '{key}' is not defined")))?;
+    let binding = cache.get(&key).ok_or_else(|| {
+      Error::new(
+        Status::InvalidArg,
+        format!("Function '{key}' is not defined"),
+      )
+    })?;
     if binding.pointer != pointer {
       return Err(Error::new(
         Status::InvalidArg,
@@ -138,7 +171,11 @@ impl DynamicLibrary {
     if values.len() != binding.signature.args.len() {
       return Err(Error::new(
         Status::InvalidArg,
-        format!("Invalid argument count: expected {}, got {}", binding.signature.args.len(), values.len()),
+        format!(
+          "Invalid argument count: expected {}, got {}",
+          binding.signature.args.len(),
+          values.len()
+        ),
       ));
     }
 
@@ -150,20 +187,32 @@ impl DynamicLibrary {
       .enumerate()
       .map(|(index, (target, value))| target.js_to_ffi(value, index))
       .collect::<Result<Vec<PreparedArg>>>()?;
-    let ffi_args = prepared.iter().map(PreparedArg::as_arg).collect::<Vec<Arg<'_>>>();
-    binding
-      .signature
-      .ret
-      .ffi_to_js(env, &binding.signature.cif, CodePtr(pointer as *mut _), &ffi_args)
+    let ffi_args = prepared
+      .iter()
+      .map(PreparedArg::as_arg)
+      .collect::<Vec<Arg<'_>>>();
+    binding.signature.ret.ffi_to_js(
+      env,
+      &binding.signature.cif,
+      CodePtr(pointer as *mut _),
+      &ffi_args,
+    )
   }
 
   #[napi]
-  pub fn get_functions<'env>(&self, env: &'env Env, definitions: Object<'env>) -> Result<Object<'env>> {
+  pub fn get_functions<'env>(
+    &self,
+    env: &'env Env,
+    definitions: Object<'env>,
+  ) -> Result<Object<'env>> {
     let mut output = Object::new(env)?;
     for name in Object::keys(&definitions)? {
-      let definition = definitions
-        .get::<Object>(name.as_str())?
-        .ok_or_else(|| Error::new(Status::InvalidArg, format!("Missing definition for symbol '{name}'")))?;
+      let definition = definitions.get::<Object>(name.as_str())?.ok_or_else(|| {
+        Error::new(
+          Status::InvalidArg,
+          format!("Missing definition for symbol '{name}'"),
+        )
+      })?;
       let function = self.get_function(name.clone(), definition)?;
       output.set(name.as_str(), function)?;
     }
@@ -172,7 +221,11 @@ impl DynamicLibrary {
 }
 
 #[napi]
-pub fn dlopen<'env>(env: &'env Env, path: Option<String>, definitions: Option<Object<'env>>) -> Result<Object<'env>> {
+pub fn dlopen<'env>(
+  env: &'env Env,
+  path: Option<String>,
+  definitions: Option<Object<'env>>,
+) -> Result<Object<'env>> {
   let lib = DynamicLibrary::new(path)?;
   let mut output = Object::new(env)?;
   let functions = if let Some(definitions) = definitions {

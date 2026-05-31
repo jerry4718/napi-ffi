@@ -2,8 +2,9 @@ use libffi::middle::Cif;
 use napi::bindgen_prelude::*;
 
 use crate::targets::{
-  FfiTarget, F32Target, F64Target, I16Target, I32Target, I64Target, I8Target, PointerTarget,
-  U16Target, U32Target, U64Target, U8Target, VoidTarget,
+  ArrayBufferTarget, BufferTarget, F32Target, F64Target, FfiTarget, FunctionTarget, I16Target,
+  I32Target, I64Target, I8Target, PointerTarget, StringTarget, U16Target, U32Target, U64Target,
+  U8Target, VoidTarget,
 };
 
 pub struct CompiledSignature {
@@ -14,7 +15,11 @@ pub struct CompiledSignature {
 
 impl CompiledSignature {
   pub fn argument_type_names(&self) -> Vec<String> {
-    self.args.iter().map(|target| target.type_name().to_owned()).collect()
+    self
+      .args
+      .iter()
+      .map(|target| target.type_name().to_owned())
+      .collect()
   }
 
   pub fn result_type_name(&self) -> String {
@@ -35,9 +40,11 @@ fn parse_target(type_name: &str) -> Result<Box<dyn FfiTarget>> {
     "u64" | "uint64" => Ok(Box::new(U64Target)),
     "f32" | "float" | "float32" => Ok(Box::new(F32Target)),
     "f64" | "double" | "float64" => Ok(Box::new(F64Target)),
-    "pointer" | "ptr" | "buffer" | "arraybuffer" | "function" | "string" | "str" => {
-      Ok(Box::new(PointerTarget))
-    }
+    "pointer" | "ptr" => Ok(Box::new(PointerTarget)),
+    "buffer" => Ok(Box::new(BufferTarget)),
+    "arraybuffer" => Ok(Box::new(ArrayBufferTarget)),
+    "function" => Ok(Box::new(FunctionTarget)),
+    "string" | "str" => Ok(Box::new(StringTarget)),
     _ => Err(Error::new(
       Status::InvalidArg,
       format!("Unsupported FFI type: {type_name}"),
@@ -63,7 +70,10 @@ pub fn compile_signature(definition: Object) -> Result<CompiledSignature> {
     .collect::<Result<Vec<_>>>()?;
   let compiled_ret = parse_target(&ret)?;
   let cif = Cif::new(
-    compiled_args.iter().map(|target| target.ffi_type()).collect::<Vec<_>>(),
+    compiled_args
+      .iter()
+      .map(|target| target.ffi_type())
+      .collect::<Vec<_>>(),
     compiled_ret.ffi_type(),
   );
 
