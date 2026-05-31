@@ -132,7 +132,6 @@ impl CallbackContext {
   unsafe fn try_invoke(&mut self, result: &mut *mut c_void, args: *const *const c_void) -> Result<()> {
     let env = Env::from_raw(self.env);
     let function_value = self.function.get_value(&env)?;
-    let function: Function<'_, Vec<Unknown<'_>>, Unknown<'_>> = unsafe { function_value.cast()? };
 
     let js_args = self
       .signature
@@ -145,7 +144,24 @@ impl CallbackContext {
       })
       .collect::<Result<Vec<_>>>()?;
 
-    let returned = function.call(js_args)?;
+    let raw_args = js_args
+      .iter()
+      .map(|arg| unsafe { arg.raw() })
+      .collect::<Vec<sys::napi_value>>();
+    let mut raw_this = std::ptr::null_mut();
+    check_status!(unsafe { sys::napi_get_undefined(env.raw(), &mut raw_this) }, "Get undefined value failed")?;
+    let mut raw_return = std::ptr::null_mut();
+    check_pending_exception!(env.raw(), unsafe {
+      sys::napi_call_function(
+        env.raw(),
+        raw_this,
+        function_value.raw(),
+        raw_args.len(),
+        raw_args.as_ptr(),
+        &mut raw_return,
+      )
+    }, "Call Function failed")?;
+    let returned = unsafe { Unknown::from_raw_unchecked(env.raw(), raw_return) };
     let prepared = PreparedCallbackReturn::new(self.signature.ret.as_ref())?;
     unsafe {
       self
