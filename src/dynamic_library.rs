@@ -116,10 +116,33 @@ struct FunctionBinding {
   signature: CompiledFunctionSignature,
 }
 
+#[napi]
+pub struct CallbackHandleHolder {
+  function: UnknownRef,
+}
+
+impl CallbackHandleHolder {
+  fn get_function<'env>(&self, env: &'env Env) -> Result<Unknown<'env>> {
+    self.function.get_value(env)
+  }
+}
+
+enum CallbackFunctionState {
+  Strong(Reference<CallbackHandleHolder>),
+  Weak(WeakReference<CallbackHandleHolder>),
+  Collected,
+}
+
 struct CallbackContext {
   env: napi::sys::napi_env,
+  thread_id: std::thread::ThreadId,
   signature: CompiledCallbackSignature,
-  function: Option<UnknownRef>,
+  function_state: CallbackFunctionState,
+}
+
+fn abort_callback(message: &str) -> ! {
+  eprintln!("{message}");
+  std::process::abort()
 }
 
 impl CallbackContext {
@@ -128,13 +151,28 @@ impl CallbackContext {
   }
 
   unsafe fn try_invoke(&mut self, result: &mut *mut c_void, args: *const *const c_void) -> Result<()> {
+    if self.thread_id != std::thread::current().id() {
+      abort_callback("Callbacks can only be invoked on the system thread they were created on")
+    }
     let env = Env::from_raw(self.env);
-    let Some(function_ref) = self.function.as_ref() else {
-      let prepared = PreparedCallbackReturn::new(self.signature.ret.as_ref())?;
-      unsafe { std::ptr::write_bytes((result as *mut *mut c_void).cast::<u8>(), 0, prepared.layout.size()) };
-      return Ok(());
+
+    let function_value = match &mut self.function_state {
+      CallbackFunctionState::Strong(holder) => holder.get_function(&env)?,
+      CallbackFunctionState::Weak(holder) => match holder.upgrade(env)? {
+        Some(reference) => reference.get_function(&env)?,
+        None => {
+          self.function_state = CallbackFunctionState::Collected;
+          let prepared = PreparedCallbackReturn::new(self.signature.ret.as_ref())?;
+          unsafe { std::ptr::write_bytes((result as *mut *mut c_void).cast::<u8>(), 0, prepared.layout.size()) };
+          return Ok(());
+        }
+      },
+      CallbackFunctionState::Collected => {
+        let prepared = PreparedCallbackReturn::new(self.signature.ret.as_ref())?;
+        unsafe { std::ptr::write_bytes((result as *mut *mut c_void).cast::<u8>(), 0, prepared.layout.size()) };
+        return Ok(());
+      }
     };
-    let function_value = function_ref.get_value(&env)?;
 
     let js_args = self
       .signature
@@ -147,10 +185,7 @@ impl CallbackContext {
       })
       .collect::<Result<Vec<_>>>()?;
 
-    let raw_args = js_args
-      .iter()
-      .map(|arg| unsafe { arg.raw() })
-      .collect::<Vec<sys::napi_value>>();
+    let raw_args = js_args.iter().map(|arg| arg.raw()).collect::<Vec<sys::napi_value>>();
     let mut raw_this = std::ptr::null_mut();
     check_status!(unsafe { sys::napi_get_undefined(env.raw(), &mut raw_this) }, "Get undefined value failed")?;
     let mut raw_return = std::ptr::null_mut();
@@ -178,12 +213,7 @@ impl CallbackContext {
 }
 
 impl Drop for CallbackContext {
-  fn drop(&mut self) {
-    if let Some(function) = self.function.take() {
-      let env = Env::from_raw(self.env);
-      let _ = function.unref(&env);
-    }
-  }
+  fn drop(&mut self) {}
 }
 
 unsafe extern "C" fn callback_adapter(
@@ -357,7 +387,7 @@ impl DynamicLibrary {
   }
 
   #[napi]
-  pub fn register_callback(&self, env: &Env, definition: Option<Object>, callback: Option<Unknown>) -> Result<BigInt> {
+  pub fn register_callback(&self, env: &Env, definition: Option<Object>, callback: Option<Function<'_, (), Unknown<'_>>>) -> Result<BigInt> {
     self.ensure_open()?;
     let definition = definition.ok_or_else(|| {
       Error::new(Status::InvalidArg, "Callback signature must be an object".to_owned())
@@ -366,11 +396,15 @@ impl DynamicLibrary {
       Error::new(Status::InvalidArg, "Callback must be a function".to_owned())
     })?;
     let compiled = compile_callback_signature(definition)?;
-    let function = callback.create_ref()?;
+    let holder = CallbackHandleHolder {
+      function: callback.into_unknown(env)?.create_ref()?,
+    };
+    let strong = holder.into_reference(Env::from_raw(env.raw()))?;
     let mut context = Box::new(CallbackContext {
       env: env.raw(),
+      thread_id: std::thread::current().id(),
       signature: compiled,
-      function: Some(function),
+      function_state: CallbackFunctionState::Strong(strong),
     });
     let closure = Closure::new_mut(rebuild_callback_cif(&context.signature), callback_adapter, unsafe {
       &mut *(&mut *context as *mut CallbackContext)
@@ -398,7 +432,17 @@ impl DynamicLibrary {
   pub fn ref_callback(&self, pointer: BigInt) -> Result<()> {
     self.ensure_open()?;
     let pointer = pointer_from_bigint(&pointer)?;
-    if self.callbacks.borrow().contains_key(&pointer) {
+    let mut callbacks = self.callbacks.borrow_mut();
+    if let Some(binding) = callbacks.get_mut(&pointer) {
+      let env = Env::from_raw(binding.context.env);
+      binding.context.function_state = match std::mem::replace(&mut binding.context.function_state, CallbackFunctionState::Collected) {
+        CallbackFunctionState::Strong(reference) => CallbackFunctionState::Strong(reference),
+        CallbackFunctionState::Weak(weak) => match weak.upgrade(env)? {
+          Some(reference) => CallbackFunctionState::Strong(reference),
+          None => CallbackFunctionState::Collected,
+        },
+        CallbackFunctionState::Collected => CallbackFunctionState::Collected,
+      };
       Ok(())
     } else {
       Err(callback_not_found())
@@ -411,10 +455,11 @@ impl DynamicLibrary {
     let pointer = pointer_from_bigint(&pointer)?;
     let mut callbacks = self.callbacks.borrow_mut();
     if let Some(binding) = callbacks.get_mut(&pointer) {
-      if let Some(function) = binding.context.function.take() {
-        let env = Env::from_raw(binding.context.env);
-        function.unref(&env)?;
-      }
+      binding.context.function_state = match std::mem::replace(&mut binding.context.function_state, CallbackFunctionState::Collected) {
+        CallbackFunctionState::Strong(reference) => CallbackFunctionState::Weak(reference.downgrade()),
+        CallbackFunctionState::Weak(weak) => CallbackFunctionState::Weak(weak),
+        CallbackFunctionState::Collected => CallbackFunctionState::Collected,
+      };
       Ok(())
     } else {
       Err(callback_not_found())

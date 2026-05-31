@@ -220,7 +220,7 @@ macro_rules! numeric_target {
         storage: *mut u8,
       ) -> Result<()> {
         let parsed: $rust_ty = $callback_check(value)?;
-        unsafe { ptr::write(storage.cast::<$rust_ty>(), parsed) };
+        unsafe { ptr::write_unaligned(storage.cast::<$rust_ty>(), parsed) };
         Ok(())
       }
 
