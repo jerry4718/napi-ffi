@@ -1,6 +1,6 @@
 {
-  "name": "@napi-rs/package-template-pnpm",
-  "version": "1.1.1",
+  "name": "@ylcc/napi-ffi",
+  "version": "0.0.100",
   "description": "Template project for writing node package with napi-rs",
   "main": "index.js",
   "types": "index.d.ts",
@@ -24,7 +24,7 @@
     "browser.js"
   ],
   "napi": {
-    "binaryName": "package-template",
+    "binaryName": "napi-ffi",
     "targets": [
       "x86_64-apple-darwin",
       "aarch64-apple-darwin",
@@ -38,8 +38,7 @@
       "x86_64-unknown-freebsd",
       "aarch64-unknown-linux-musl",
       "aarch64-pc-windows-msvc",
-      "armv7-linux-androideabi",
-      "wasm32-wasi-preview1-threads"
+      "armv7-linux-androideabi"
     ]
   },
   "engines": {
@@ -52,28 +51,27 @@
   "scripts": {
     "artifacts": "napi artifacts",
     "bench": "node --import @oxc-node/core/register benchmark/bench.ts",
-    "build": "napi build --platform --release",
-    "build:debug": "napi build --platform",
+    "build": "napi build --platform --release --js native.js --dts native.d.ts",
+    "build:debug": "napi build --platform --js native.js --dts native.d.ts",
+    "build:ffi-fixture": "mkdir -p __test__/fixture_library/build/Debug __test__/fixtures/build && cc -shared -fPIC __test__/fixture_library/ffi_test_library.c -o __test__/fixture_library/build/Debug/ffi_test_library.so && cp __test__/fixture_library/build/Debug/ffi_test_library.so __test__/fixtures/build/ffi_test_library.so",
     "format": "run-p format:prettier format:rs format:toml",
     "format:prettier": "prettier . -w",
     "format:toml": "taplo format",
     "format:rs": "cargo fmt",
     "lint": "oxlint",
     "prepublishOnly": "napi prepublish -t npm",
-    "test": "ava",
+    "test": "pnpm build:ffi-fixture && ava",
     "version": "napi version"
   },
   "devDependencies": {
-    "@emnapi/core": "^1.5.0",
-    "@emnapi/runtime": "^1.5.0",
-    "@napi-rs/cli": "^3.2.0",
-    "@napi-rs/wasm-runtime": "^1.0.4",
+    "@emnapi/core": "^1.10.0",
+    "@emnapi/runtime": "^1.10.0",
+    "@napi-rs/cli": "^3.6.2",
     "@oxc-node/core": "^0.1.0",
     "@taplo/cli": "^0.7.0",
-    "@tybys/wasm-util": "^0.10.0",
     "ava": "^8.0.0",
     "chalk": "^5.6.2",
-    "emnapi": "^1.5.0",
+    "emnapi": "^1.10.0",
     "husky": "^9.1.7",
     "lint-staged": "^17.0.0",
     "npm-run-all2": "^8.0.4",
@@ -94,15 +92,20 @@
     ]
   },
   "ava": {
+    "files": [
+      "__test__/**/*.spec.ts"
+    ],
     "extensions": [
       "ts"
     ],
     "timeout": "2m",
+    "failWithoutAssertions": false,
     "workerThreads": false,
     "environmentVariables": {
       "TS_NODE_PROJECT": "./tsconfig.json"
     },
     "nodeArguments": [
+      "--expose-gc",
       "--import",
       "@oxc-node/core/register"
     ]
