@@ -6,6 +6,10 @@ const {
   dlclose,
   dlopen,
   dlsym,
+  kSbInvokeSlow,
+  kSbParams,
+  kSbResult,
+  kSbSharedBuffer,
 } = require('./lib/internal/ffi-library')
 const memory = require('./lib/internal/ffi-memory')
 
@@ -43,3 +47,10 @@ module.exports = {
   suffix,
   types,
 }
+
+Object.defineProperties(module.exports, {
+  kSbInvokeSlow: { value: kSbInvokeSlow, enumerable: false, configurable: false, writable: false },
+  kSbParams: { value: kSbParams, enumerable: false, configurable: false, writable: false },
+  kSbResult: { value: kSbResult, enumerable: false, configurable: false, writable: false },
+  kSbSharedBuffer: { value: kSbSharedBuffer, enumerable: false, configurable: false, writable: false },
+})

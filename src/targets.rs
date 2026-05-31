@@ -345,13 +345,8 @@ numeric_target!(
   Type::f32(),
   f32,
   "float32",
-  |value: Unknown<'_>, index| {
+  |value: Unknown<'_>, _index| {
     let number: f64 = unsafe { value.cast()? };
-    if !number.is_finite() {
-      return Err(invalid_arg_value(format!(
-        "Argument {index} must be a float"
-      )));
-    }
     Ok(prepared(PreparedArgStorage::F32(number as f32)))
   },
   f32_to_js
@@ -362,13 +357,8 @@ numeric_target!(
   Type::f64(),
   f64,
   "float64",
-  |value: Unknown<'_>, index| {
+  |value: Unknown<'_>, _index| {
     let number: f64 = unsafe { value.cast()? };
-    if !number.is_finite() {
-      return Err(invalid_arg_value(format!(
-        "Argument {index} must be a double"
-      )));
-    }
     Ok(prepared(PreparedArgStorage::F64(number)))
   },
   f64_to_js
