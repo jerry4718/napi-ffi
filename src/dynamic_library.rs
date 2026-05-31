@@ -9,7 +9,7 @@ use libloading::os::unix::Library as UnixLibrary;
 use libloading::os::windows::Library as WindowsLibrary;
 use libloading::Library;
 use napi::bindgen_prelude::*;
-use napi::Env;
+use napi::{Env, UnknownRef};
 use napi_derive::napi;
 
 use crate::signature::{compile_signature, CompiledSignature};
@@ -18,6 +18,11 @@ use crate::targets::PreparedArg;
 struct FunctionBinding {
   pointer: usize,
   signature: CompiledSignature,
+}
+
+struct CallbackBinding {
+  signature: CompiledSignature,
+  function: UnknownRef,
 }
 
 #[napi(object)]
@@ -33,6 +38,8 @@ pub struct DynamicLibrary {
   path: Option<String>,
   library: Option<Library>,
   functions: RefCell<HashMap<String, FunctionBinding>>,
+  callbacks: RefCell<HashMap<usize, CallbackBinding>>,
+  next_callback_pointer: RefCell<usize>,
 }
 
 fn pointer_from_bigint(pointer: &BigInt) -> Result<usize> {
@@ -49,6 +56,17 @@ fn pointer_from_bigint(pointer: &BigInt) -> Result<usize> {
       "The pointer exceeds the platform address range".to_owned(),
     )
   })
+}
+
+fn callback_not_found() -> Error {
+  Error::new(Status::InvalidArg, "Callback not found".to_owned())
+}
+
+fn callback_unimplemented() -> Error {
+  Error::new(
+    Status::GenericFailure,
+    "Callback runtime is not implemented yet".to_owned(),
+  )
 }
 
 #[napi]
@@ -75,6 +93,8 @@ impl DynamicLibrary {
       path: path_value,
       library: Some(library),
       functions: RefCell::new(HashMap::new()),
+      callbacks: RefCell::new(HashMap::new()),
+      next_callback_pointer: RefCell::new(1),
     })
   }
 
@@ -90,9 +110,14 @@ impl DynamicLibrary {
       .ok_or_else(|| Error::new(Status::GenericFailure, "Library is closed".to_owned()))
   }
 
+  fn ensure_open(&self) -> Result<()> {
+    self.library().map(|_| ())
+  }
+
   #[napi]
   pub fn close(&mut self) {
     self.functions.borrow_mut().clear();
+    self.callbacks.borrow_mut().clear();
     self.library = None;
   }
 
@@ -120,7 +145,7 @@ impl DynamicLibrary {
         let raw_ptr = unsafe {
           let raw = library
             .get::<*mut c_void>(symbol.as_bytes())
-            .map_err(|error| Error::new(Status::GenericFailure, error.to_string()))?;
+            .map_err(|error| Error::new(Status::GenericFailure, format!("dlsym failed: {error}")))?;
           *raw as usize
         };
         cache.insert(
@@ -144,6 +169,60 @@ impl DynamicLibrary {
       result: binding.signature.result_type_name(),
       key: symbol,
     })
+  }
+
+  #[napi]
+  pub fn register_callback(&self, definition: Option<Object>, callback: Option<Unknown>) -> Result<BigInt> {
+    self.ensure_open()?;
+    let definition = definition.ok_or_else(|| {
+      Error::new(Status::InvalidArg, "Callback signature must be an object".to_owned())
+    })?;
+    let callback = callback.ok_or_else(|| {
+      Error::new(Status::InvalidArg, "Callback must be a function".to_owned())
+    })?;
+    let compiled = compile_signature(definition)?;
+    let function = callback.create_ref()?;
+    let pointer = {
+      let mut next = self.next_callback_pointer.borrow_mut();
+      let pointer = *next;
+      *next = next.saturating_add(1);
+      pointer
+    };
+    self.callbacks.borrow_mut().insert(pointer, CallbackBinding { signature: compiled, function });
+    Err(callback_unimplemented())
+  }
+
+  #[napi]
+  pub fn unregister_callback(&self, pointer: BigInt) -> Result<()> {
+    self.ensure_open()?;
+    let pointer = pointer_from_bigint(&pointer)?;
+    if self.callbacks.borrow_mut().remove(&pointer).is_some() {
+      Ok(())
+    } else {
+      Err(callback_not_found())
+    }
+  }
+
+  #[napi]
+  pub fn ref_callback(&self, pointer: BigInt) -> Result<()> {
+    self.ensure_open()?;
+    let pointer = pointer_from_bigint(&pointer)?;
+    if self.callbacks.borrow().contains_key(&pointer) {
+      Err(callback_unimplemented())
+    } else {
+      Err(callback_not_found())
+    }
+  }
+
+  #[napi]
+  pub fn unref_callback(&self, pointer: BigInt) -> Result<()> {
+    self.ensure_open()?;
+    let pointer = pointer_from_bigint(&pointer)?;
+    if self.callbacks.borrow().contains_key(&pointer) {
+      Err(callback_unimplemented())
+    } else {
+      Err(callback_not_found())
+    }
   }
 
   #[napi]
