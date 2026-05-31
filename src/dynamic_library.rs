@@ -2,8 +2,9 @@ use std::alloc::{alloc, dealloc, Layout};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::c_void;
-use std::ptr::NonNull;
+use std::ptr::{self, NonNull};
 
+use libffi::low;
 use libffi::middle::{Arg, CodePtr};
 #[cfg(unix)]
 use libloading::os::unix::Library as UnixLibrary;
@@ -61,14 +62,121 @@ impl Drop for PreparedFunctionArg {
   }
 }
 
+struct PreparedCallbackReturn {
+  target: *const dyn crate::targets::TypedTarget,
+  storage: NonNull<u8>,
+  layout: Layout,
+}
+
+impl PreparedCallbackReturn {
+  fn new(target: &dyn crate::targets::TypedTarget) -> Result<Self> {
+    let layout = target.callback_return_layout();
+    let storage = if layout.size() == 0 {
+      NonNull::dangling()
+    } else {
+      let raw = unsafe { alloc(layout) };
+      NonNull::new(raw).ok_or_else(|| Error::new(Status::GenericFailure, "Allocation failed".to_owned()))?
+    };
+    Ok(Self {
+      target: target as *const dyn crate::targets::TypedTarget,
+      storage,
+      layout,
+    })
+  }
+
+  fn as_mut_ptr(&self) -> *mut u8 {
+    self.storage.as_ptr()
+  }
+
+  unsafe fn value_ptr(&self) -> *const c_void {
+    unsafe { (&*self.target).callback_return_ptr(self.storage.as_ptr()) }
+  }
+}
+
+impl Drop for PreparedCallbackReturn {
+  fn drop(&mut self) {
+    unsafe {
+      (&*self.target).drop_callback_return(self.storage.as_ptr());
+      if self.layout.size() != 0 {
+        dealloc(self.storage.as_ptr(), self.layout);
+      }
+    }
+  }
+}
+
 struct FunctionBinding {
   pointer: usize,
   signature: CompiledFunctionSignature,
 }
 
-struct CallbackBinding {
+struct CallbackRuntime {
+  env: napi::sys::napi_env,
   signature: CompiledCallbackSignature,
   function: UnknownRef,
+  closure: *mut low::ffi_closure,
+  code_ptr: CodePtr,
+}
+
+impl Drop for CallbackRuntime {
+  fn drop(&mut self) {
+    unsafe {
+      if !self.closure.is_null() {
+        low::closure_free(self.closure);
+      }
+      let function = ptr::read(&self.function);
+      let env = Env::from_raw(self.env);
+      let _ = function.unref(&env);
+    }
+  }
+}
+
+struct CallbackBinding {
+  runtime: Box<CallbackRuntime>,
+}
+
+unsafe extern "C" fn callback_trampoline(
+  _cif: &low::ffi_cif,
+  result: &mut *mut c_void,
+  args: *const *const c_void,
+  runtime: &mut CallbackRuntime,
+) {
+  if let Err(error) = invoke_callback(runtime, result, args) {
+    let _ = error;
+    *result = ptr::null_mut();
+  }
+}
+
+unsafe fn invoke_callback(
+  runtime: &mut CallbackRuntime,
+  result: &mut *mut c_void,
+  args: *const *const c_void,
+) -> Result<()> {
+  let env = Env::from_raw(runtime.env);
+  let function_value = runtime.function.get_value(&env)?;
+  let function: napi::bindgen_prelude::Function<'_, Vec<Unknown<'_>>, Unknown<'_>> = unsafe { function_value.cast()? };
+
+  let js_args = runtime
+    .signature
+    .args
+    .iter()
+    .enumerate()
+    .map(|(index, target)| {
+      let arg_ptr = unsafe { *args.add(index) };
+      unsafe { target.formalize_callback_arg(&env, arg_ptr, index) }
+    })
+    .collect::<Result<Vec<_>>>()?;
+
+  let returned = function.call(js_args)?;
+  let prepared = PreparedCallbackReturn::new(runtime.signature.ret.as_ref())?;
+  unsafe {
+    runtime
+      .signature
+      .ret
+      .formalize_callback_return(&env, returned, prepared.as_mut_ptr())?;
+    *result = prepared.value_ptr() as *mut c_void;
+  }
+  std::mem::forget(prepared);
+  Ok(())
 }
 
 #[napi(object)]
@@ -85,7 +193,6 @@ pub struct DynamicLibrary {
   library: Option<Library>,
   functions: RefCell<HashMap<String, FunctionBinding>>,
   callbacks: RefCell<HashMap<usize, CallbackBinding>>,
-  next_callback_pointer: RefCell<usize>,
 }
 
 fn pointer_from_bigint(pointer: &BigInt) -> Result<usize> {
@@ -108,11 +215,11 @@ fn callback_not_found() -> Error {
   Error::new(Status::InvalidArg, "Callback not found".to_owned())
 }
 
-fn callback_unimplemented() -> Error {
-  Error::new(
-    Status::GenericFailure,
-    "Callback runtime is not implemented yet".to_owned(),
-  )
+fn callback_pointer_from_runtime(runtime: &CallbackRuntime) -> Result<BigInt> {
+  let raw = runtime.code_ptr.as_mut_ptr() as usize;
+  let raw = u64::try_from(raw)
+    .map_err(|_| Error::new(Status::GenericFailure, "Callback pointer exceeds u64 range".to_owned()))?;
+  Ok(BigInt::from(raw))
 }
 
 #[napi]
@@ -140,7 +247,6 @@ impl DynamicLibrary {
       library: Some(library),
       functions: RefCell::new(HashMap::new()),
       callbacks: RefCell::new(HashMap::new()),
-      next_callback_pointer: RefCell::new(1),
     })
   }
 
@@ -218,7 +324,7 @@ impl DynamicLibrary {
   }
 
   #[napi]
-  pub fn register_callback(&self, definition: Option<Object>, callback: Option<Unknown>) -> Result<BigInt> {
+  pub fn register_callback(&self, env: &Env, definition: Option<Object>, callback: Option<Unknown>) -> Result<BigInt> {
     self.ensure_open()?;
     let definition = definition.ok_or_else(|| {
       Error::new(Status::InvalidArg, "Callback signature must be an object".to_owned())
@@ -228,14 +334,30 @@ impl DynamicLibrary {
     })?;
     let compiled = compile_callback_signature(definition)?;
     let function = callback.create_ref()?;
-    let pointer = {
-      let mut next = self.next_callback_pointer.borrow_mut();
-      let pointer = *next;
-      *next = next.saturating_add(1);
-      pointer
-    };
-    self.callbacks.borrow_mut().insert(pointer, CallbackBinding { signature: compiled, function });
-    Err(callback_unimplemented())
+    let mut runtime = Box::new(CallbackRuntime {
+      env: env.raw(),
+      signature: compiled,
+      function,
+      closure: ptr::null_mut(),
+      code_ptr: CodePtr(ptr::null_mut()),
+    });
+    let (closure, code_ptr) = low::closure_alloc();
+    runtime.closure = closure;
+    runtime.code_ptr = code_ptr;
+    unsafe {
+      low::prep_closure_mut(
+        closure,
+        runtime.signature.cif.as_raw_ptr(),
+        callback_trampoline,
+        &mut *runtime,
+        code_ptr,
+      )
+      .map_err(|error| Error::new(Status::GenericFailure, format!("ffi_prep_closure_loc failed: {error:?}")))?;
+    }
+    let pointer = callback_pointer_from_runtime(&runtime)?;
+    let key = pointer_from_bigint(&pointer)?;
+    self.callbacks.borrow_mut().insert(key, CallbackBinding { runtime });
+    Ok(pointer)
   }
 
   #[napi]
@@ -254,7 +376,7 @@ impl DynamicLibrary {
     self.ensure_open()?;
     let pointer = pointer_from_bigint(&pointer)?;
     if self.callbacks.borrow().contains_key(&pointer) {
-      Err(callback_unimplemented())
+      Ok(())
     } else {
       Err(callback_not_found())
     }
@@ -265,7 +387,7 @@ impl DynamicLibrary {
     self.ensure_open()?;
     let pointer = pointer_from_bigint(&pointer)?;
     if self.callbacks.borrow().contains_key(&pointer) {
-      Err(callback_unimplemented())
+      Ok(())
     } else {
       Err(callback_not_found())
     }
