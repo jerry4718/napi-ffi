@@ -41,6 +41,18 @@ function invalidArgType(message) {
   return err
 }
 
+function invalidBufferTooLarge() {
+  const err = new RangeError('Cannot create a Buffer larger than the maximum size')
+  err.code = 'ERR_BUFFER_TOO_LARGE'
+  return err
+}
+
+function validateNoNullBytes(value, message) {
+  if (typeof value === 'string' && value.includes('\0')) {
+    throw new Error(message)
+  }
+}
+
 function validatePointer(pointer, name = 'pointer') {
   if (typeof pointer !== 'bigint') {
     throw new TypeError(`The ${name} must be a bigint`)
@@ -57,12 +69,23 @@ function validateLength(len) {
   if (!Number.isInteger(len) || len < 0) {
     throw new TypeError('The length must be a non-negative integer')
   }
+  if (len > require('node:buffer').constants.MAX_LENGTH) {
+    throw invalidBufferTooLarge()
+  }
 }
 
-function normalizeI64Value(value, label) {
-  if (typeof value === 'bigint') return value
-  if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value)
-  throw new TypeError(`Value must be ${label}`)
+function normalizeI64Value(value, label, signed = true) {
+  let bigint
+  if (typeof value === 'bigint') bigint = value
+  else if (typeof value === 'number' && Number.isSafeInteger(value)) bigint = BigInt(value)
+  else throw new TypeError(`Value must be ${label}`)
+
+  if (signed) {
+    if (bigint < -(1n << 63n) || bigint > ((1n << 63n) - 1n)) throw new TypeError(`Value must be ${label}`)
+  } else if (bigint < 0n || bigint > ((1n << 64n) - 1n)) {
+    throw new TypeError(`Value must be ${label}`)
+  }
+  return bigint
 }
 
 function exportBytes(source, pointer, len) {
@@ -145,8 +168,8 @@ function getRawPointer(value) {
 
 function wrapMemorySetter(setter, kind) {
   return (pointer, offset, value) => {
-    if (kind === 'int64') return setter(pointer, offset, normalizeI64Value(value, 'an int64'))
-    if (kind === 'uint64') return setter(pointer, offset, normalizeI64Value(value, 'a uint64'))
+    if (kind === 'int64') return setter(pointer, offset, normalizeI64Value(value, 'an int64', true))
+    if (kind === 'uint64') return setter(pointer, offset, normalizeI64Value(value, 'a uint64', false))
     return setter(pointer, offset, value)
   }
 }
@@ -165,6 +188,9 @@ function callBySpec(lib, spec, args) {
   if (args.length !== spec.arguments.length) {
     throw invalidArgValue(`Invalid argument count: expected ${spec.arguments.length}, got ${args.length}`)
   }
+  if (lib._closed) {
+    throw new Error('Library is closed')
+  }
   return lib._native.invoke(spec.key, spec.pointer, args)
 }
 
@@ -181,6 +207,7 @@ function createWrappedFunction(lib, name, spec) {
 class DynamicLibrary {
   constructor(path) {
     this._native = new native.DynamicLibrary(path)
+    this._closed = false
     this._functionCache = new Map()
     this._symbolCache = new Map()
     this.functions = Object.create(null)
@@ -192,6 +219,7 @@ class DynamicLibrary {
   }
 
   close() {
+    this._closed = true
     return this._native.close()
   }
 
@@ -200,6 +228,8 @@ class DynamicLibrary {
   }
 
   getSymbol(symbol) {
+    if (this._closed) throw new Error('Library is closed')
+    validateNoNullBytes(symbol, 'Symbol name must not contain null bytes')
     if (this._symbolCache.has(symbol)) return this._symbolCache.get(symbol)
     const pointer = this._native.getSymbol(symbol)
     this._symbolCache.set(symbol, pointer)
@@ -212,7 +242,14 @@ class DynamicLibrary {
   }
 
   getFunction(symbol, definition = {}) {
+    if (this._closed) throw new Error('Library is closed')
+    validateNoNullBytes(symbol, 'Function name must not contain null bytes')
+    if (definition === null || typeof definition !== 'object' || Array.isArray(definition)) {
+      throw new TypeError(`Signature of function ${symbol} must be an object`)
+    }
     const signature = normalizeSignature(definition)
+    validateNoNullBytes(signature.result, `Return value type of function ${symbol} must not contain null bytes`)
+    signature.arguments.forEach((arg, index) => validateNoNullBytes(arg, `Argument ${index} of function ${symbol} must not contain null bytes`))
     const key = `${symbol}:${signatureKey(signature)}`
     const cached = this._functionCache.get(symbol)
     if (cached && cached.signature !== signatureKey(signature)) {
@@ -232,8 +269,14 @@ class DynamicLibrary {
     if (definitions === undefined) {
       return Object.assign(Object.create(null), this.functions)
     }
+    if (definitions === null || typeof definitions !== 'object' || Array.isArray(definitions)) {
+      throw new TypeError('Functions signatures must be an object')
+    }
     const out = Object.create(null)
     for (const [name, definition] of Object.entries(definitions)) {
+      if (definition === null || typeof definition !== 'object' || Array.isArray(definition)) {
+        throw new TypeError(`Signature of function ${name} must be an object`)
+      }
       out[name] = this.getFunction(name, definition)
     }
     return out

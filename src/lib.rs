@@ -1,7 +1,5 @@
 #![deny(clippy::all)]
 
-use napi_derive::napi;
-
 mod dynamic_library;
 mod memory;
 mod signature;
@@ -14,9 +12,4 @@ pub use memory::{
   get_uint32, get_uint64, get_uint8, set_float32, set_float64, set_int16, set_int32, set_int64,
   set_int8, set_uint16, set_uint32, set_uint64, set_uint8, to_array_buffer, to_buffer, to_string,
 };
-pub use types::{suffix, types, FfiTypes};
-
-#[napi]
-pub fn plus_100(input: u32) -> u32 {
-  input + 100
-}
+pub use types::suffix;

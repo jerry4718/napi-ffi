@@ -67,9 +67,20 @@ fn prepared(storage: PreparedArgStorage) -> PreparedArg {
   }
 }
 
+fn prepared_with_auxiliary(storage: PreparedArgStorage, auxiliary: PreparedArgStorage) -> PreparedArg {
+  PreparedArg {
+    storage,
+    auxiliary: Some(auxiliary),
+  }
+}
+
+fn prepared_c_string(string: CString) -> PreparedArg {
+  let ptr = string.as_ptr();
+  prepared_with_auxiliary(PreparedArgStorage::CStringPtr(ptr), PreparedArgStorage::CString(string))
+}
+
 fn invalid_arg_value(message: impl Into<String>) -> Error {
-  let error = Error::new(Status::InvalidArg, message.into());
-  error
+  Error::new(Status::InvalidArg, message.into())
 }
 
 fn bigint_to_u64(value: &BigInt, message: &str) -> Result<u64> {
@@ -125,12 +136,9 @@ fn raw_pointer_from_unknown(
         "Argument must be a buffer, an ArrayBuffer, a string, or a bigint",
       ))
     }
-    ValueType::String if allow_string => {
-      let string: String = unsafe { value.cast()? };
-      let c_string = CString::new(string)
-        .map_err(|_| invalid_arg_value(format!("Argument {index} must not contain null bytes")))?;
-      Ok(c_string.into_raw() as *mut c_void)
-    }
+    ValueType::String if allow_string => Err(invalid_arg_value(format!(
+      "Argument {index} must be passed through a string-aware target"
+    ))),
     _ => Err(invalid_arg_value(
       "Argument must be a buffer, an ArrayBuffer, a string, or a bigint",
     )),
@@ -203,7 +211,7 @@ numeric_target!(
   "int8",
   |value: Unknown<'_>, index| {
     let number: f64 = unsafe { value.cast()? };
-    if !number.is_finite() || number.fract() != 0.0 || !(-128.0..=127.0).contains(&number) {
+    if number.fract() != 0.0 || !(-128.0..=127.0).contains(&number) {
       return Err(invalid_arg_value(format!(
         "Argument {index} must be an int8"
       )));
@@ -220,7 +228,7 @@ numeric_target!(
   "uint8",
   |value: Unknown<'_>, index| {
     let number: f64 = unsafe { value.cast()? };
-    if !number.is_finite() || number.fract() != 0.0 || !(0.0..=255.0).contains(&number) {
+    if number.fract() != 0.0 || !(0.0..=255.0).contains(&number) {
       return Err(invalid_arg_value(format!(
         "Argument {index} must be a uint8"
       )));
@@ -237,7 +245,7 @@ numeric_target!(
   "int16",
   |value: Unknown<'_>, index| {
     let number: f64 = unsafe { value.cast()? };
-    if !number.is_finite() || number.fract() != 0.0 || !(-32768.0..=32767.0).contains(&number) {
+    if number.fract() != 0.0 || !(-32768.0..=32767.0).contains(&number) {
       return Err(invalid_arg_value(format!(
         "Argument {index} must be an int16"
       )));
@@ -254,7 +262,7 @@ numeric_target!(
   "uint16",
   |value: Unknown<'_>, index| {
     let number: f64 = unsafe { value.cast()? };
-    if !number.is_finite() || number.fract() != 0.0 || !(0.0..=65535.0).contains(&number) {
+    if number.fract() != 0.0 || !(0.0..=65535.0).contains(&number) {
       return Err(invalid_arg_value(format!(
         "Argument {index} must be a uint16"
       )));
@@ -339,7 +347,7 @@ numeric_target!(
   "float32",
   |value: Unknown<'_>, index| {
     let number: f64 = unsafe { value.cast()? };
-    if !number.is_finite() {
+    if !number.is_nan() {
       return Err(invalid_arg_value(format!(
         "Argument {index} must be a float"
       )));
@@ -356,7 +364,7 @@ numeric_target!(
   "float64",
   |value: Unknown<'_>, index| {
     let number: f64 = unsafe { value.cast()? };
-    if !number.is_finite() {
+    if !number.is_nan() {
       return Err(invalid_arg_value(format!(
         "Argument {index} must be a double"
       )));
@@ -380,9 +388,18 @@ impl FfiTarget for PointerTarget {
     Type::pointer()
   }
   fn js_to_ffi(&self, value: Unknown<'_>, index: usize) -> Result<PreparedArg> {
-    Ok(prepared(PreparedArgStorage::Pointer(
-      raw_pointer_from_unknown(value, index, false)?,
-    )))
+    match value.get_type()? {
+      ValueType::String => {
+        let string: String = unsafe { value.cast()? };
+        let c_string = CString::new(string).map_err(|_| {
+          invalid_arg_value(format!("Argument {index} must not contain null bytes"))
+        })?;
+        Ok(prepared_c_string(c_string))
+      }
+      _ => Ok(prepared(PreparedArgStorage::Pointer(
+        raw_pointer_from_unknown(value, index, false)?,
+      ))),
+    }
   }
   fn ffi_to_js<'env>(
     &self,
@@ -410,11 +427,7 @@ impl FfiTarget for StringTarget {
         let c_string = CString::new(string).map_err(|_| {
           invalid_arg_value(format!("Argument {index} must not contain null bytes"))
         })?;
-        let c_ptr = c_string.as_ptr();
-        Ok(PreparedArg {
-          storage: PreparedArgStorage::CStringPtr(c_ptr),
-          auxiliary: Some(PreparedArgStorage::CString(c_string)),
-        })
+        Ok(prepared_c_string(c_string))
       }
       _ => Ok(prepared(PreparedArgStorage::Pointer(
         raw_pointer_from_unknown(value, index, false)?,
