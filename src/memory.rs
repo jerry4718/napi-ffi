@@ -136,18 +136,34 @@ pub fn to_string(pointer: BigInt) -> Result<Option<String>> {
 #[napi]
 pub fn to_buffer(env: &Env, pointer: BigInt, len: u32, copy: Option<bool>) -> Result<Buffer> {
   let raw = bigint_to_u64(&pointer, "The first argument must be a non-negative bigint")?;
+  if usize::BITS < 64 && raw > usize::MAX as u64 {
+    return Err(Error::new(
+      Status::InvalidArg,
+      "The pointer exceeds the platform address range".to_owned(),
+    ));
+  }
   if raw == 0 && len > 0 {
     return Err(Error::new(
       Status::InvalidArg,
       "Cannot create a buffer from a null pointer".to_owned(),
     ));
   }
-  let slice = unsafe { std::slice::from_raw_parts(raw as usize as *const u8, len as usize) };
+  let len = len as usize;
+  (raw as usize)
+    .checked_add(len.saturating_sub(1))
+    .ok_or_else(|| {
+      Error::new(
+        Status::InvalidArg,
+        "The pointer and length exceed the platform address range".to_owned(),
+      )
+    })?;
+  let slice = if len == 0 {
+    &[]
+  } else {
+    unsafe { std::slice::from_raw_parts(raw as usize as *const u8, len) }
+  };
   if copy == Some(false) {
-    unsafe {
-      BufferSlice::from_external(env, raw as usize as *mut u8, len as usize, (), |_, _| {})?
-        .into_buffer(env)
-    }
+    unsafe { BufferSlice::from_external(env, raw as usize as *mut u8, len, (), |_, _| {})?.into_buffer(env) }
   } else {
     BufferSlice::copy_from(env, slice)?.into_buffer(env)
   }
@@ -161,15 +177,34 @@ pub fn to_array_buffer<'env>(
   copy: Option<bool>,
 ) -> Result<ArrayBuffer<'env>> {
   let raw = bigint_to_u64(&pointer, "The first argument must be a non-negative bigint")?;
+  if usize::BITS < 64 && raw > usize::MAX as u64 {
+    return Err(Error::new(
+      Status::InvalidArg,
+      "The pointer exceeds the platform address range".to_owned(),
+    ));
+  }
   if raw == 0 && len > 0 {
     return Err(Error::new(
       Status::InvalidArg,
       "Cannot create an ArrayBuffer from a null pointer".to_owned(),
     ));
   }
-  let slice = unsafe { std::slice::from_raw_parts(raw as usize as *const u8, len as usize) };
+  let len = len as usize;
+  (raw as usize)
+    .checked_add(len.saturating_sub(1))
+    .ok_or_else(|| {
+      Error::new(
+        Status::InvalidArg,
+        "The pointer and length exceed the platform address range".to_owned(),
+      )
+    })?;
+  let slice = if len == 0 {
+    &[]
+  } else {
+    unsafe { std::slice::from_raw_parts(raw as usize as *const u8, len) }
+  };
   if copy == Some(false) {
-    unsafe { ArrayBuffer::from_external(env, raw as usize as *mut u8, len as usize, (), |_, _| {}) }
+    unsafe { ArrayBuffer::from_external(env, raw as usize as *mut u8, len, (), |_, _| {}) }
   } else {
     ArrayBuffer::from_data(env, slice)
   }
