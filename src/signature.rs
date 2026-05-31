@@ -49,7 +49,7 @@ impl CompiledCallbackSignature {
 
 fn parse_target(type_name: &str) -> Result<Box<dyn TypedTarget>> {
   match type_name {
-    "void" | "Void" => Ok(Box::new(VoidTarget)),
+    "void" => Ok(Box::new(VoidTarget)),
     "char" => {
       if (std::ffi::c_char::MIN as i32) < 0 {
         Ok(Box::new(I8Target))
