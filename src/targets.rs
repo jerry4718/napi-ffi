@@ -113,12 +113,6 @@ fn raw_pointer_from_unknown(value: Unknown<'_>, index: usize) -> Result<*mut c_v
         "Argument must be a buffer, an ArrayBuffer, a string, or a bigint",
       ))
     }
-    ValueType::String => {
-      let string: String = unsafe { value.cast()? };
-      let c_string = CString::new(string)
-        .map_err(|_| invalid_arg_value(format!("Argument {index} must not contain null bytes")))?;
-      Ok(c_string.into_raw() as *mut c_void)
-    }
     _ => Err(invalid_arg_value(
       "Argument must be a buffer, an ArrayBuffer, a string, or a bigint",
     )),
@@ -512,6 +506,12 @@ numeric_target!(
   f64_to_js
 );
 
+#[repr(C)]
+struct PointerArgStorage {
+  pointer: *mut c_void,
+  owned_c_string: Option<CString>,
+}
+
 pub struct PointerTarget;
 
 impl TypedTarget for PointerTarget {
@@ -524,7 +524,7 @@ impl TypedTarget for PointerTarget {
   }
 
   fn function_arg_layout(&self) -> Layout {
-    Layout::new::<*mut c_void>()
+    Layout::new::<PointerArgStorage>()
   }
 
   unsafe fn formalize_function_arg<'env>(
@@ -534,20 +534,43 @@ impl TypedTarget for PointerTarget {
     index: usize,
     storage: *mut u8,
   ) -> Result<()> {
-    unsafe {
-      ptr::write(
-        storage.cast::<*mut c_void>(),
-        raw_pointer_from_unknown(value, index)?,
-      )
-    };
+    let storage = storage.cast::<PointerArgStorage>();
+    match value.get_type()? {
+      ValueType::String => {
+        let string: String = unsafe { value.cast()? };
+        let c_string = CString::new(string)
+          .map_err(|_| invalid_arg_value(format!("Argument {index} must not contain null bytes")))?;
+        unsafe {
+          ptr::write(
+            storage,
+            PointerArgStorage {
+              pointer: c_string.as_ptr() as *mut c_void,
+              owned_c_string: Some(c_string),
+            },
+          )
+        };
+      }
+      _ => unsafe {
+        ptr::write(
+          storage,
+          PointerArgStorage {
+            pointer: raw_pointer_from_unknown(value, index)?,
+            owned_c_string: None,
+          },
+        )
+      },
+    }
     Ok(())
   }
 
   unsafe fn function_arg_as_ffi_arg<'a>(&self, storage: *const u8) -> Arg<'a> {
-    Arg::new(unsafe { &*storage.cast::<*mut c_void>() })
+    let storage = unsafe { &*storage.cast::<PointerArgStorage>() };
+    Arg::new(&storage.pointer)
   }
 
-  unsafe fn drop_function_arg(&self, _storage: *mut u8) {}
+  unsafe fn drop_function_arg(&self, storage: *mut u8) {
+    unsafe { ptr::drop_in_place(storage.cast::<PointerArgStorage>()) };
+  }
 
   unsafe fn formalize_function_return<'env>(
     &self,
