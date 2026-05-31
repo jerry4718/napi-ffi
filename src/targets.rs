@@ -119,6 +119,26 @@ fn raw_pointer_from_unknown(value: Unknown<'_>, index: usize) -> Result<*mut c_v
   }
 }
 
+enum PointerArgumentCategory {
+  Regular(*mut c_void),
+  String(CString),
+}
+
+fn pointer_argument_from_unknown(
+  value: Unknown<'_>,
+  index: usize,
+) -> Result<PointerArgumentCategory> {
+  match value.get_type()? {
+    ValueType::String => {
+      let string: String = unsafe { value.cast()? };
+      let c_string = CString::new(string)
+        .map_err(|_| invalid_arg_value(format!("Argument {index} must not contain null bytes")))?;
+      Ok(PointerArgumentCategory::String(c_string))
+    }
+    _ => Ok(PointerArgumentCategory::Regular(raw_pointer_from_unknown(value, index)?)),
+  }
+}
+
 macro_rules! read_scalar {
   ($ptr:expr, $ty:ty) => {
     unsafe { ptr::read_unaligned($ptr.cast::<$ty>()) }
@@ -535,26 +555,21 @@ impl TypedTarget for PointerTarget {
     storage: *mut u8,
   ) -> Result<()> {
     let storage = storage.cast::<PointerArgStorage>();
-    match value.get_type()? {
-      ValueType::String => {
-        let string: String = unsafe { value.cast()? };
-        let c_string = CString::new(string)
-          .map_err(|_| invalid_arg_value(format!("Argument {index} must not contain null bytes")))?;
-        unsafe {
-          ptr::write(
-            storage,
-            PointerArgStorage {
-              pointer: c_string.as_ptr() as *mut c_void,
-              owned_c_string: Some(c_string),
-            },
-          )
-        };
-      }
-      _ => unsafe {
+    match pointer_argument_from_unknown(value, index)? {
+      PointerArgumentCategory::String(c_string) => unsafe {
         ptr::write(
           storage,
           PointerArgStorage {
-            pointer: raw_pointer_from_unknown(value, index)?,
+            pointer: c_string.as_ptr() as *mut c_void,
+            owned_c_string: Some(c_string),
+          },
+        )
+      },
+      PointerArgumentCategory::Regular(pointer) => unsafe {
+        ptr::write(
+          storage,
+          PointerArgStorage {
+            pointer,
             owned_c_string: None,
           },
         )
