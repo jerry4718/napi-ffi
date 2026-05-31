@@ -22,6 +22,12 @@ fn bigint_to_i64(value: &BigInt, message: &str) -> Result<i64> {
 
 fn checked_addr(pointer: BigInt, offset: Option<i64>, access_size: usize) -> Result<usize> {
   let raw = bigint_to_u64(&pointer, "The pointer must be a non-negative bigint")?;
+  if raw == 0 && access_size != 0 {
+    return Err(Error::new(
+      Status::InvalidArg,
+      "Cannot dereference a null pointer".to_owned(),
+    ));
+  }
   let offset = offset.unwrap_or(0);
   if offset < 0 {
     return Err(Error::new(
@@ -41,13 +47,15 @@ fn checked_addr(pointer: BigInt, offset: Option<i64>, access_size: usize) -> Res
       "The offset exceeds the platform address range".to_owned(),
     )
   })?;
-  base
-    .checked_add(offset)
-    .and_then(|addr| {
-      addr
-        .checked_add(access_size.saturating_sub(1))
-        .map(|_| addr)
-    })
+  let base_plus_offset = base.checked_add(offset).ok_or_else(|| {
+    Error::new(
+      Status::InvalidArg,
+      "The pointer and offset exceed the platform address range".to_owned(),
+    )
+  })?;
+  base_plus_offset
+    .checked_add(access_size.saturating_sub(1))
+    .map(|_| base_plus_offset)
     .ok_or_else(|| {
       Error::new(
         Status::InvalidArg,
