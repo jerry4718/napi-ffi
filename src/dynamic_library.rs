@@ -91,12 +91,10 @@ impl PreparedCallbackReturn {
     let value_ptr = unsafe { (&*self.target).callback_return_ptr(self.storage.as_ptr()) };
     let copy_size = self.layout.size();
     if copy_size != 0 {
-      unsafe {
-        std::ptr::copy_nonoverlapping(
-          value_ptr.cast::<u8>(),
-          (result as *mut *mut c_void).cast::<u8>(),
-          copy_size,
-        );
+      let src = value_ptr.cast::<u8>();
+      let dst = (result as *mut *mut c_void).cast::<u8>();
+      for offset in 0..copy_size {
+        unsafe { dst.add(offset).write(src.add(offset).read()) };
       }
     }
   }
@@ -121,7 +119,7 @@ struct FunctionBinding {
 struct CallbackContext {
   env: napi::sys::napi_env,
   signature: CompiledCallbackSignature,
-  function: UnknownRef,
+  function: Option<UnknownRef>,
 }
 
 impl CallbackContext {
@@ -131,7 +129,12 @@ impl CallbackContext {
 
   unsafe fn try_invoke(&mut self, result: &mut *mut c_void, args: *const *const c_void) -> Result<()> {
     let env = Env::from_raw(self.env);
-    let function_value = self.function.get_value(&env)?;
+    let Some(function_ref) = self.function.as_ref() else {
+      let prepared = PreparedCallbackReturn::new(self.signature.ret.as_ref())?;
+      unsafe { std::ptr::write_bytes((result as *mut *mut c_void).cast::<u8>(), 0, prepared.layout.size()) };
+      return Ok(());
+    };
+    let function_value = function_ref.get_value(&env)?;
 
     let js_args = self
       .signature
@@ -176,8 +179,7 @@ impl CallbackContext {
 
 impl Drop for CallbackContext {
   fn drop(&mut self) {
-    unsafe {
-      let function = std::ptr::read(&self.function);
+    if let Some(function) = self.function.take() {
       let env = Env::from_raw(self.env);
       let _ = function.unref(&env);
     }
@@ -219,7 +221,7 @@ fn pointer_from_bigint(pointer: &BigInt) -> Result<usize> {
   if signed || !lossless {
     return Err(Error::new(
       Status::InvalidArg,
-      "The pointer must be a non-negative bigint".to_owned(),
+      "The first argument must be a non-negative bigint".to_owned(),
     ));
   }
   usize::try_from(raw).map_err(|_| {
@@ -368,7 +370,7 @@ impl DynamicLibrary {
     let mut context = Box::new(CallbackContext {
       env: env.raw(),
       signature: compiled,
-      function,
+      function: Some(function),
     });
     let closure = Closure::new_mut(rebuild_callback_cif(&context.signature), callback_adapter, unsafe {
       &mut *(&mut *context as *mut CallbackContext)
@@ -407,7 +409,12 @@ impl DynamicLibrary {
   pub fn unref_callback(&self, pointer: BigInt) -> Result<()> {
     self.ensure_open()?;
     let pointer = pointer_from_bigint(&pointer)?;
-    if self.callbacks.borrow().contains_key(&pointer) {
+    let mut callbacks = self.callbacks.borrow_mut();
+    if let Some(binding) = callbacks.get_mut(&pointer) {
+      if let Some(function) = binding.context.function.take() {
+        let env = Env::from_raw(binding.context.env);
+        function.unref(&env)?;
+      }
       Ok(())
     } else {
       Err(callback_not_found())
