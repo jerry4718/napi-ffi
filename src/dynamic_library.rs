@@ -1,6 +1,8 @@
+use std::alloc::{alloc, dealloc, Layout};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::c_void;
+use std::ptr::NonNull;
 
 use libffi::middle::{Arg, CodePtr};
 #[cfg(unix)]
@@ -12,16 +14,60 @@ use napi::bindgen_prelude::*;
 use napi::{Env, UnknownRef};
 use napi_derive::napi;
 
-use crate::signature::{compile_signature, CompiledSignature};
-use crate::targets::PreparedArg;
+use crate::signature::{
+  compile_callback_signature, compile_function_signature, CompiledCallbackSignature,
+  CompiledFunctionSignature,
+};
+
+struct PreparedFunctionArg {
+  target: *const dyn crate::targets::TypedTarget,
+  storage: NonNull<u8>,
+  layout: Layout,
+}
+
+impl PreparedFunctionArg {
+  fn new(target: &dyn crate::targets::TypedTarget) -> Result<Self> {
+    let layout = target.function_arg_layout();
+    let storage = if layout.size() == 0 {
+      NonNull::dangling()
+    } else {
+      let raw = unsafe { alloc(layout) };
+      NonNull::new(raw).ok_or_else(|| Error::new(Status::GenericFailure, "Allocation failed".to_owned()))?
+    };
+    Ok(Self {
+      target: target as *const dyn crate::targets::TypedTarget,
+      storage,
+      layout,
+    })
+  }
+
+  fn as_ptr(&self) -> *mut u8 {
+    self.storage.as_ptr()
+  }
+
+  unsafe fn as_arg(&self) -> Arg<'_> {
+    unsafe { (&*self.target).function_arg_as_ffi_arg(self.storage.as_ptr()) }
+  }
+}
+
+impl Drop for PreparedFunctionArg {
+  fn drop(&mut self) {
+    unsafe {
+      (&*self.target).drop_function_arg(self.storage.as_ptr());
+      if self.layout.size() != 0 {
+        dealloc(self.storage.as_ptr(), self.layout);
+      }
+    }
+  }
+}
 
 struct FunctionBinding {
   pointer: usize,
-  signature: CompiledSignature,
+  signature: CompiledFunctionSignature,
 }
 
 struct CallbackBinding {
-  signature: CompiledSignature,
+  signature: CompiledCallbackSignature,
   function: UnknownRef,
 }
 
@@ -135,7 +181,7 @@ impl DynamicLibrary {
 
   #[napi]
   pub fn get_function(&self, symbol: String, definition: Object) -> Result<CallSpec> {
-    let compiled = compile_signature(definition)?;
+    let compiled = compile_function_signature(definition)?;
     let pointer = {
       let mut cache = self.functions.borrow_mut();
       if let Some(existing) = cache.get(&symbol) {
@@ -180,7 +226,7 @@ impl DynamicLibrary {
     let callback = callback.ok_or_else(|| {
       Error::new(Status::InvalidArg, "Callback must be a function".to_owned())
     })?;
-    let compiled = compile_signature(definition)?;
+    let compiled = compile_callback_signature(definition)?;
     let function = callback.create_ref()?;
     let pointer = {
       let mut next = self.next_callback_pointer.borrow_mut();
@@ -264,18 +310,26 @@ impl DynamicLibrary {
       .iter()
       .zip(values)
       .enumerate()
-      .map(|(index, (target, value))| target.js_to_ffi(value, index))
-      .collect::<Result<Vec<PreparedArg>>>()?;
+      .map(|(index, (target, value))| {
+        let prepared = PreparedFunctionArg::new(target.as_ref())?;
+        unsafe { target.formalize_function_arg(env, value, index, prepared.as_ptr())? };
+        Ok(prepared)
+      })
+      .collect::<Result<Vec<_>>>()?;
+
     let ffi_args = prepared
       .iter()
-      .map(PreparedArg::as_arg)
+      .map(|prepared| unsafe { prepared.as_arg() })
       .collect::<Vec<Arg<'_>>>();
-    binding.signature.ret.ffi_to_js(
-      env,
-      &binding.signature.cif,
-      CodePtr(pointer as *mut _),
-      &ffi_args,
-    )
+
+    unsafe {
+      binding.signature.ret.formalize_function_return(
+        env,
+        &binding.signature.cif,
+        CodePtr(pointer as *mut _),
+        &ffi_args,
+      )
+    }
   }
 
   #[napi]
@@ -315,14 +369,4 @@ pub fn dlopen<'env>(
   output.set("lib", lib)?;
   output.set("functions", functions)?;
   Ok(output)
-}
-
-#[napi]
-pub fn dlclose(lib: &mut DynamicLibrary) {
-  lib.close()
-}
-
-#[napi]
-pub fn dlsym(lib: &DynamicLibrary, symbol: String) -> Result<BigInt> {
-  lib.get_symbol(symbol)
 }
