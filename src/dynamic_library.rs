@@ -2,10 +2,9 @@ use std::alloc::{alloc, dealloc, Layout};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::c_void;
-use std::ptr::{self, NonNull};
+use std::ptr::NonNull;
 
-use libffi::low;
-use libffi::middle::{Arg, CodePtr};
+use libffi::middle::{Arg, Cif, Closure, CodePtr};
 #[cfg(unix)]
 use libloading::os::unix::Library as UnixLibrary;
 #[cfg(windows)]
@@ -88,8 +87,18 @@ impl PreparedCallbackReturn {
     self.storage.as_ptr()
   }
 
-  unsafe fn value_ptr(&self) -> *const c_void {
-    unsafe { (&*self.target).callback_return_ptr(self.storage.as_ptr()) }
+  unsafe fn copy_into_result(&self, result: &mut *mut c_void) {
+    let value_ptr = unsafe { (&*self.target).callback_return_ptr(self.storage.as_ptr()) };
+    let copy_size = self.layout.size();
+    if copy_size != 0 {
+      unsafe {
+        std::ptr::copy_nonoverlapping(
+          value_ptr.cast::<u8>(),
+          (result as *mut *mut c_void).cast::<u8>(),
+          copy_size,
+        );
+      }
+    }
   }
 }
 
@@ -109,74 +118,68 @@ struct FunctionBinding {
   signature: CompiledFunctionSignature,
 }
 
-struct CallbackRuntime {
+struct CallbackContext {
   env: napi::sys::napi_env,
   signature: CompiledCallbackSignature,
   function: UnknownRef,
-  closure: *mut low::ffi_closure,
-  code_ptr: CodePtr,
 }
 
-impl Drop for CallbackRuntime {
+impl CallbackContext {
+  unsafe fn invoke(&mut self, result: &mut *mut c_void, args: *const *const c_void) {
+    let _ = unsafe { self.try_invoke(result, args) };
+  }
+
+  unsafe fn try_invoke(&mut self, result: &mut *mut c_void, args: *const *const c_void) -> Result<()> {
+    let env = Env::from_raw(self.env);
+    let function_value = self.function.get_value(&env)?;
+    let function: Function<'_, Vec<Unknown<'_>>, Unknown<'_>> = unsafe { function_value.cast()? };
+
+    let js_args = self
+      .signature
+      .args
+      .iter()
+      .enumerate()
+      .map(|(index, target)| {
+        let arg_ptr = unsafe { *args.add(index) };
+        unsafe { target.formalize_callback_arg(&env, arg_ptr, index) }
+      })
+      .collect::<Result<Vec<_>>>()?;
+
+    let returned = function.call(js_args)?;
+    let prepared = PreparedCallbackReturn::new(self.signature.ret.as_ref())?;
+    unsafe {
+      self
+        .signature
+        .ret
+        .formalize_callback_return(&env, returned, prepared.as_mut_ptr())?;
+      prepared.copy_into_result(result);
+    }
+    Ok(())
+  }
+}
+
+impl Drop for CallbackContext {
   fn drop(&mut self) {
     unsafe {
-      if !self.closure.is_null() {
-        low::closure_free(self.closure);
-      }
-      let function = ptr::read(&self.function);
+      let function = std::ptr::read(&self.function);
       let env = Env::from_raw(self.env);
       let _ = function.unref(&env);
     }
   }
 }
 
-struct CallbackBinding {
-  runtime: Box<CallbackRuntime>,
-}
-
-unsafe extern "C" fn callback_trampoline(
-  _cif: &low::ffi_cif,
+unsafe extern "C" fn callback_adapter(
+  _cif: &libffi::low::ffi_cif,
   result: &mut *mut c_void,
   args: *const *const c_void,
-  runtime: &mut CallbackRuntime,
+  context: &mut CallbackContext,
 ) {
-  if let Err(error) = invoke_callback(runtime, result, args) {
-    let _ = error;
-    *result = ptr::null_mut();
-  }
+  unsafe { context.invoke(result, args) }
 }
 
-unsafe fn invoke_callback(
-  runtime: &mut CallbackRuntime,
-  result: &mut *mut c_void,
-  args: *const *const c_void,
-) -> Result<()> {
-  let env = Env::from_raw(runtime.env);
-  let function_value = runtime.function.get_value(&env)?;
-  let function: napi::bindgen_prelude::Function<'_, Vec<Unknown<'_>>, Unknown<'_>> = unsafe { function_value.cast()? };
-
-  let js_args = runtime
-    .signature
-    .args
-    .iter()
-    .enumerate()
-    .map(|(index, target)| {
-      let arg_ptr = unsafe { *args.add(index) };
-      unsafe { target.formalize_callback_arg(&env, arg_ptr, index) }
-    })
-    .collect::<Result<Vec<_>>>()?;
-
-  let returned = function.call(js_args)?;
-  let prepared = PreparedCallbackReturn::new(runtime.signature.ret.as_ref())?;
-  unsafe {
-    runtime
-      .signature
-      .ret
-      .formalize_callback_return(&env, returned, prepared.as_mut_ptr())?;
-    *result = prepared.value_ptr() as *mut c_void;
-  }
-  std::mem::forget(prepared);
-  Ok(())
+struct CallbackBinding {
+  context: Box<CallbackContext>,
+  closure: Closure<'static>,
 }
 
 #[napi(object)]
@@ -215,11 +218,23 @@ fn callback_not_found() -> Error {
   Error::new(Status::InvalidArg, "Callback not found".to_owned())
 }
 
-fn callback_pointer_from_runtime(runtime: &CallbackRuntime) -> Result<BigInt> {
-  let raw = runtime.code_ptr.as_mut_ptr() as usize;
+fn callback_pointer_from_closure(closure: &Closure<'_>) -> Result<BigInt> {
+  let code_ptr = CodePtr::from_fun(*closure.code_ptr());
+  let raw = code_ptr.as_mut_ptr() as usize;
   let raw = u64::try_from(raw)
     .map_err(|_| Error::new(Status::GenericFailure, "Callback pointer exceeds u64 range".to_owned()))?;
   Ok(BigInt::from(raw))
+}
+
+fn rebuild_callback_cif(signature: &CompiledCallbackSignature) -> Cif {
+  Cif::new(
+    signature
+      .args
+      .iter()
+      .map(|target| target.ffi_type())
+      .collect::<Vec<_>>(),
+    signature.ret.ffi_type(),
+  )
 }
 
 #[napi]
@@ -334,29 +349,19 @@ impl DynamicLibrary {
     })?;
     let compiled = compile_callback_signature(definition)?;
     let function = callback.create_ref()?;
-    let mut runtime = Box::new(CallbackRuntime {
+    let mut context = Box::new(CallbackContext {
       env: env.raw(),
       signature: compiled,
       function,
-      closure: ptr::null_mut(),
-      code_ptr: CodePtr(ptr::null_mut()),
     });
-    let (closure, code_ptr) = low::closure_alloc();
-    runtime.closure = closure;
-    runtime.code_ptr = code_ptr;
-    unsafe {
-      low::prep_closure_mut(
-        closure,
-        runtime.signature.cif.as_raw_ptr(),
-        callback_trampoline,
-        &mut *runtime,
-        code_ptr,
-      )
-      .map_err(|error| Error::new(Status::GenericFailure, format!("ffi_prep_closure_loc failed: {error:?}")))?;
-    }
-    let pointer = callback_pointer_from_runtime(&runtime)?;
+    let closure = Closure::new_mut(rebuild_callback_cif(&context.signature), callback_adapter, unsafe {
+      &mut *(&mut *context as *mut CallbackContext)
+    });
+    let pointer = callback_pointer_from_closure(&closure)?;
     let key = pointer_from_bigint(&pointer)?;
-    self.callbacks.borrow_mut().insert(key, CallbackBinding { runtime });
+    let context = unsafe { Box::from_raw(Box::into_raw(context)) };
+    let closure = unsafe { std::mem::transmute::<Closure<'_>, Closure<'static>>(closure) };
+    self.callbacks.borrow_mut().insert(key, CallbackBinding { context, closure });
     Ok(pointer)
   }
 
