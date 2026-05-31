@@ -116,14 +116,20 @@ struct FunctionBinding {
   signature: CompiledFunctionSignature,
 }
 
-#[napi]
+#[napi(custom_finalize)]
 pub struct CallbackHandleHolder {
-  function: UnknownRef,
+  function: UnknownRef<false>,
 }
 
 impl CallbackHandleHolder {
   fn get_function<'env>(&self, env: &'env Env) -> Result<Unknown<'env>> {
     self.function.get_value(env)
+  }
+}
+
+impl napi::bindgen_prelude::ObjectFinalize for CallbackHandleHolder {
+  fn finalize(self, env: Env) -> Result<()> {
+    self.function.unref(&env)
   }
 }
 
@@ -147,13 +153,18 @@ fn abort_callback(message: &str) -> ! {
 
 impl CallbackContext {
   unsafe fn invoke(&mut self, result: &mut *mut c_void, args: *const *const c_void) {
-    let _ = unsafe { self.try_invoke(result, args) };
-  }
-
-  unsafe fn try_invoke(&mut self, result: &mut *mut c_void, args: *const *const c_void) -> Result<()> {
     if self.thread_id != std::thread::current().id() {
       abort_callback("Callbacks can only be invoked on the system thread they were created on")
     }
+    if let Err(error) = unsafe { self.try_invoke(result, args) } {
+      if error.status == Status::InvalidArg {
+        abort_callback(&error.reason)
+      }
+      abort_callback("Callbacks cannot throw an exception")
+    }
+  }
+
+  unsafe fn try_invoke(&mut self, result: &mut *mut c_void, args: *const *const c_void) -> Result<()> {
     let env = Env::from_raw(self.env);
 
     let function_value = match &mut self.function_state {
@@ -198,8 +209,11 @@ impl CallbackContext {
         raw_args.as_ptr(),
         &mut raw_return,
       )
-    }, "Call Function failed")?;
+    }, "Callbacks cannot throw an exception")?;
     let returned = unsafe { Unknown::from_raw_unchecked(env.raw(), raw_return) };
+    if returned.get_type()? == ValueType::Object && returned.coerce_to_object()?.has_named_property("then")? {
+      abort_callback("Callbacks cannot return promises")
+    }
     let prepared = PreparedCallbackReturn::new(self.signature.ret.as_ref())?;
     unsafe {
       self
@@ -396,8 +410,9 @@ impl DynamicLibrary {
       Error::new(Status::InvalidArg, "Callback must be a function".to_owned())
     })?;
     let compiled = compile_callback_signature(definition)?;
+    let function = callback.into_unknown(env)?.create_ref()?;
     let holder = CallbackHandleHolder {
-      function: callback.into_unknown(env)?.create_ref()?,
+      function: unsafe { std::mem::transmute::<UnknownRef<true>, UnknownRef<false>>(function) },
     };
     let strong = holder.into_reference(Env::from_raw(env.raw()))?;
     let mut context = Box::new(CallbackContext {
