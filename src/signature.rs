@@ -7,33 +7,13 @@ use crate::targets::{
   U8Target, VoidTarget,
 };
 
-pub struct CompiledFunctionSignature {
+pub struct CompiledSignature {
   pub args: Vec<Box<dyn TypedTarget>>,
   pub ret: Box<dyn TypedTarget>,
   pub cif: Cif,
 }
 
-pub struct CompiledCallbackSignature {
-  pub args: Vec<Box<dyn TypedTarget>>,
-  pub ret: Box<dyn TypedTarget>,
-  pub cif: Cif,
-}
-
-impl CompiledFunctionSignature {
-  pub fn argument_type_names(&self) -> Vec<String> {
-    self
-      .args
-      .iter()
-      .map(|target| target.type_name().to_owned())
-      .collect()
-  }
-
-  pub fn result_type_name(&self) -> String {
-    self.ret.type_name().to_owned()
-  }
-}
-
-impl CompiledCallbackSignature {
+impl CompiledSignature {
   pub fn argument_type_names(&self) -> Vec<String> {
     self
       .args
@@ -50,15 +30,12 @@ impl CompiledCallbackSignature {
 fn parse_target(type_name: &str) -> Result<Box<dyn TypedTarget>> {
   match type_name {
     "void" => Ok(Box::new(VoidTarget)),
-    "char" => {
-      if (std::ffi::c_char::MIN as i32) < 0 {
-        Ok(Box::new(I8Target))
-      } else {
-        Ok(Box::new(U8Target))
-      }
-    }
     "i8" | "int8" => Ok(Box::new(I8Target)),
     "bool" | "u8" | "uint8" => Ok(Box::new(U8Target)),
+    "char" => match std::ffi::c_char::MIN {
+      ..0 => Ok(Box::new(I8Target)),
+      _ => Ok(Box::new(U8Target)),
+    },
     "i16" | "int16" => Ok(Box::new(I16Target)),
     "u16" | "uint16" => Ok(Box::new(U16Target)),
     "i32" | "int32" => Ok(Box::new(I32Target)),
@@ -79,22 +56,23 @@ fn parse_target(type_name: &str) -> Result<Box<dyn TypedTarget>> {
   }
 }
 
-pub fn compile_function_signature(definition: Object) -> Result<CompiledFunctionSignature> {
+pub fn compile_signature(definition: Object) -> Result<CompiledSignature> {
   let ret = definition
-    .get::<String>("returns")?
-    .or(definition.get::<String>("return")?)
+    .get::<String>("return")?
+    .or(definition.get::<String>("returns")?)
     .or(definition.get::<String>("result")?)
     .unwrap_or_else(|| "void".to_owned());
 
   let args = definition
-    .get::<Vec<String>>("parameters")?
-    .or(definition.get::<Vec<String>>("arguments")?)
+    .get::<Vec<String>>("arguments")?
+    .or(definition.get::<Vec<String>>("parameters")?)
     .unwrap_or_default();
 
   let compiled_args = args
     .iter()
     .map(|name| parse_target(name))
     .collect::<Result<Vec<_>>>()?;
+
   let compiled_ret = parse_target(&ret)?;
   let cif = Cif::new(
     compiled_args
@@ -104,40 +82,7 @@ pub fn compile_function_signature(definition: Object) -> Result<CompiledFunction
     compiled_ret.ffi_type(),
   );
 
-  Ok(CompiledFunctionSignature {
-    args: compiled_args,
-    ret: compiled_ret,
-    cif,
-  })
-}
-
-pub fn compile_callback_signature(definition: Object) -> Result<CompiledCallbackSignature> {
-  let ret = definition
-    .get::<String>("returns")?
-    .or(definition.get::<String>("return")?)
-    .or(definition.get::<String>("result")?)
-    .unwrap_or_else(|| "void".to_owned());
-
-  let args = definition
-    .get::<Vec<String>>("parameters")?
-    .or(definition.get::<Vec<String>>("arguments")?)
-    .unwrap_or_default();
-
-  let compiled_args = args
-    .iter()
-    .map(|name| parse_target(name))
-    .collect::<Result<Vec<_>>>()?;
-  let compiled_ret = parse_target(&ret)?;
-
-  let cif = Cif::new(
-    compiled_args
-      .iter()
-      .map(|target| target.ffi_type())
-      .collect::<Vec<_>>(),
-    compiled_ret.ffi_type(),
-  );
-
-  Ok(CompiledCallbackSignature {
+  Ok(CompiledSignature {
     args: compiled_args,
     ret: compiled_ret,
     cif,

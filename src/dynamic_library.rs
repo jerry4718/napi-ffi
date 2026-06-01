@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr::NonNull;
 
-use libffi::middle::{Arg, Cif, Closure, CodePtr};
+use libffi::middle::{Arg, Closure, CodePtr};
 #[cfg(unix)]
 use libloading::os::unix::Library as UnixLibrary;
 #[cfg(windows)]
@@ -14,10 +14,7 @@ use napi::bindgen_prelude::*;
 use napi::{Env, UnknownRef};
 use napi_derive::napi;
 
-use crate::signature::{
-  compile_callback_signature, compile_function_signature, CompiledCallbackSignature,
-  CompiledFunctionSignature,
-};
+use crate::signature::{compile_signature, CompiledSignature};
 
 struct PreparedFunctionArg {
   target: *const dyn crate::targets::TypedTarget,
@@ -32,7 +29,8 @@ impl PreparedFunctionArg {
       NonNull::dangling()
     } else {
       let raw = unsafe { alloc(layout) };
-      NonNull::new(raw).ok_or_else(|| Error::new(Status::GenericFailure, "Allocation failed".to_owned()))?
+      NonNull::new(raw)
+        .ok_or_else(|| Error::new(Status::GenericFailure, "Allocation failed".to_owned()))?
     };
     Ok(Self {
       target: target as *const dyn crate::targets::TypedTarget,
@@ -74,7 +72,8 @@ impl PreparedCallbackReturn {
       NonNull::dangling()
     } else {
       let raw = unsafe { alloc(layout) };
-      NonNull::new(raw).ok_or_else(|| Error::new(Status::GenericFailure, "Allocation failed".to_owned()))?
+      NonNull::new(raw)
+        .ok_or_else(|| Error::new(Status::GenericFailure, "Allocation failed".to_owned()))?
     };
     Ok(Self {
       target: target as *const dyn crate::targets::TypedTarget,
@@ -113,7 +112,7 @@ impl Drop for PreparedCallbackReturn {
 
 struct FunctionBinding {
   pointer: usize,
-  signature: CompiledFunctionSignature,
+  signature: CompiledSignature,
 }
 
 #[napi(custom_finalize)]
@@ -127,7 +126,7 @@ impl CallbackHandleHolder {
   }
 }
 
-impl napi::bindgen_prelude::ObjectFinalize for CallbackHandleHolder {
+impl ObjectFinalize for CallbackHandleHolder {
   fn finalize(self, env: Env) -> Result<()> {
     self.function.unref(&env)
   }
@@ -142,7 +141,7 @@ enum CallbackFunctionState {
 struct CallbackContext {
   env: napi::sys::napi_env,
   thread_id: std::thread::ThreadId,
-  signature: CompiledCallbackSignature,
+  signature: CompiledSignature,
   function_state: CallbackFunctionState,
 }
 
@@ -164,7 +163,11 @@ impl CallbackContext {
     }
   }
 
-  unsafe fn try_invoke(&mut self, result: &mut *mut c_void, args: *const *const c_void) -> Result<()> {
+  unsafe fn try_invoke(
+    &mut self,
+    result: &mut *mut c_void,
+    args: *const *const c_void,
+  ) -> Result<()> {
     let env = Env::from_raw(self.env);
 
     let function_value = match &mut self.function_state {
@@ -174,13 +177,25 @@ impl CallbackContext {
         None => {
           self.function_state = CallbackFunctionState::Collected;
           let prepared = PreparedCallbackReturn::new(self.signature.ret.as_ref())?;
-          unsafe { std::ptr::write_bytes((result as *mut *mut c_void).cast::<u8>(), 0, prepared.layout.size()) };
+          unsafe {
+            std::ptr::write_bytes(
+              (result as *mut *mut c_void).cast::<u8>(),
+              0,
+              prepared.layout.size(),
+            )
+          };
           return Ok(());
         }
       },
       CallbackFunctionState::Collected => {
         let prepared = PreparedCallbackReturn::new(self.signature.ret.as_ref())?;
-        unsafe { std::ptr::write_bytes((result as *mut *mut c_void).cast::<u8>(), 0, prepared.layout.size()) };
+        unsafe {
+          std::ptr::write_bytes(
+            (result as *mut *mut c_void).cast::<u8>(),
+            0,
+            prepared.layout.size(),
+          )
+        };
         return Ok(());
       }
     };
@@ -196,22 +211,34 @@ impl CallbackContext {
       })
       .collect::<Result<Vec<_>>>()?;
 
-    let raw_args = js_args.iter().map(|arg| arg.raw()).collect::<Vec<sys::napi_value>>();
+    let raw_args = js_args
+      .iter()
+      .map(|arg| arg.raw())
+      .collect::<Vec<sys::napi_value>>();
     let mut raw_this = std::ptr::null_mut();
-    check_status!(unsafe { sys::napi_get_undefined(env.raw(), &mut raw_this) }, "Get undefined value failed")?;
+    check_status!(
+      unsafe { sys::napi_get_undefined(env.raw(), &mut raw_this) },
+      "Get undefined value failed"
+    )?;
     let mut raw_return = std::ptr::null_mut();
-    check_pending_exception!(env.raw(), unsafe {
-      sys::napi_call_function(
-        env.raw(),
-        raw_this,
-        function_value.raw(),
-        raw_args.len(),
-        raw_args.as_ptr(),
-        &mut raw_return,
-      )
-    }, "Callbacks cannot throw an exception")?;
+    check_pending_exception!(
+      env.raw(),
+      unsafe {
+        sys::napi_call_function(
+          env.raw(),
+          raw_this,
+          function_value.raw(),
+          raw_args.len(),
+          raw_args.as_ptr(),
+          &mut raw_return,
+        )
+      },
+      "Callbacks cannot throw an exception"
+    )?;
     let returned = unsafe { Unknown::from_raw_unchecked(env.raw(), raw_return) };
-    if returned.get_type()? == ValueType::Object && returned.coerce_to_object()?.has_named_property("then")? {
+    if returned.get_type()? == ValueType::Object
+      && returned.coerce_to_object()?.has_named_property("then")?
+    {
       abort_callback("Callbacks cannot return promises")
     }
     let prepared = PreparedCallbackReturn::new(self.signature.ret.as_ref())?;
@@ -241,7 +268,7 @@ unsafe extern "C" fn callback_adapter(
 
 struct CallbackBinding {
   context: Box<CallbackContext>,
-  closure: Closure<'static>,
+  _closure: Closure<'static>,
 }
 
 #[napi(object)]
@@ -283,20 +310,13 @@ fn callback_not_found() -> Error {
 fn callback_pointer_from_closure(closure: &Closure<'_>) -> Result<BigInt> {
   let code_ptr = CodePtr::from_fun(*closure.code_ptr());
   let raw = code_ptr.as_mut_ptr() as usize;
-  let raw = u64::try_from(raw)
-    .map_err(|_| Error::new(Status::GenericFailure, "Callback pointer exceeds u64 range".to_owned()))?;
+  let raw = u64::try_from(raw).map_err(|_| {
+    Error::new(
+      Status::GenericFailure,
+      "Callback pointer exceeds u64 range".to_owned(),
+    )
+  })?;
   Ok(BigInt::from(raw))
-}
-
-fn rebuild_callback_cif(signature: &CompiledCallbackSignature) -> Cif {
-  Cif::new(
-    signature
-      .args
-      .iter()
-      .map(|target| target.ffi_type())
-      .collect::<Vec<_>>(),
-    signature.ret.ffi_type(),
-  )
 }
 
 #[napi]
@@ -364,7 +384,7 @@ impl DynamicLibrary {
 
   #[napi]
   pub fn get_function(&self, symbol: String, definition: Object) -> Result<CallSpec> {
-    let compiled = compile_function_signature(definition)?;
+    let compiled = compile_signature(definition)?;
     let pointer = {
       let mut cache = self.functions.borrow_mut();
       if let Some(existing) = cache.get(&symbol) {
@@ -374,7 +394,9 @@ impl DynamicLibrary {
         let raw_ptr = unsafe {
           let raw = library
             .get::<*mut c_void>(symbol.as_bytes())
-            .map_err(|error| Error::new(Status::GenericFailure, format!("dlsym failed: {error}")))?;
+            .map_err(|error| {
+              Error::new(Status::GenericFailure, format!("dlsym failed: {error}"))
+            })?;
           *raw as usize
         };
         cache.insert(
@@ -401,15 +423,22 @@ impl DynamicLibrary {
   }
 
   #[napi]
-  pub fn register_callback(&self, env: &Env, definition: Option<Object>, callback: Option<Function<'_, (), Unknown<'_>>>) -> Result<BigInt> {
+  pub fn register_callback(
+    &self,
+    env: &Env,
+    definition: Option<Object>,
+    callback: Option<Function<'_, (), Unknown<'_>>>,
+  ) -> Result<BigInt> {
     self.ensure_open()?;
     let definition = definition.ok_or_else(|| {
-      Error::new(Status::InvalidArg, "Callback signature must be an object".to_owned())
+      Error::new(
+        Status::InvalidArg,
+        "Callback signature must be an object".to_owned(),
+      )
     })?;
-    let callback = callback.ok_or_else(|| {
-      Error::new(Status::InvalidArg, "Callback must be a function".to_owned())
-    })?;
-    let compiled = compile_callback_signature(definition)?;
+    let callback = callback
+      .ok_or_else(|| Error::new(Status::InvalidArg, "Callback must be a function".to_owned()))?;
+    let compiled = compile_signature(definition)?;
     let function = callback.into_unknown(env)?.create_ref()?;
     let holder = CallbackHandleHolder {
       function: unsafe { std::mem::transmute::<UnknownRef<true>, UnknownRef<false>>(function) },
@@ -421,14 +450,20 @@ impl DynamicLibrary {
       signature: compiled,
       function_state: CallbackFunctionState::Strong(strong),
     });
-    let closure = Closure::new_mut(rebuild_callback_cif(&context.signature), callback_adapter, unsafe {
+    let closure = Closure::new_mut(context.signature.cif.clone(), callback_adapter, unsafe {
       &mut *(&mut *context as *mut CallbackContext)
     });
     let pointer = callback_pointer_from_closure(&closure)?;
     let key = pointer_from_bigint(&pointer)?;
     let context = unsafe { Box::from_raw(Box::into_raw(context)) };
     let closure = unsafe { std::mem::transmute::<Closure<'_>, Closure<'static>>(closure) };
-    self.callbacks.borrow_mut().insert(key, CallbackBinding { context, closure });
+    self.callbacks.borrow_mut().insert(
+      key,
+      CallbackBinding {
+        context,
+        _closure: closure,
+      },
+    );
     Ok(pointer)
   }
 
@@ -450,7 +485,10 @@ impl DynamicLibrary {
     let mut callbacks = self.callbacks.borrow_mut();
     if let Some(binding) = callbacks.get_mut(&pointer) {
       let env = Env::from_raw(binding.context.env);
-      binding.context.function_state = match std::mem::replace(&mut binding.context.function_state, CallbackFunctionState::Collected) {
+      binding.context.function_state = match std::mem::replace(
+        &mut binding.context.function_state,
+        CallbackFunctionState::Collected,
+      ) {
         CallbackFunctionState::Strong(reference) => CallbackFunctionState::Strong(reference),
         CallbackFunctionState::Weak(weak) => match weak.upgrade(env)? {
           Some(reference) => CallbackFunctionState::Strong(reference),
@@ -470,8 +508,13 @@ impl DynamicLibrary {
     let pointer = pointer_from_bigint(&pointer)?;
     let mut callbacks = self.callbacks.borrow_mut();
     if let Some(binding) = callbacks.get_mut(&pointer) {
-      binding.context.function_state = match std::mem::replace(&mut binding.context.function_state, CallbackFunctionState::Collected) {
-        CallbackFunctionState::Strong(reference) => CallbackFunctionState::Weak(reference.downgrade()),
+      binding.context.function_state = match std::mem::replace(
+        &mut binding.context.function_state,
+        CallbackFunctionState::Collected,
+      ) {
+        CallbackFunctionState::Strong(reference) => {
+          CallbackFunctionState::Weak(reference.downgrade())
+        }
         CallbackFunctionState::Weak(weak) => CallbackFunctionState::Weak(weak),
         CallbackFunctionState::Collected => CallbackFunctionState::Collected,
       };
