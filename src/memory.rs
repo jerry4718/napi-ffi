@@ -4,6 +4,8 @@ use std::ptr;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
+use crate::value_helpers::raw_bytes_pointer;
+
 fn bigint_to_u64(value: &BigInt, message: &str) -> Result<u64> {
   let (signed, raw, lossless) = value.get_u64();
   if signed || !lossless {
@@ -219,20 +221,8 @@ pub fn to_array_buffer<'env>(
 pub fn get_raw_pointer(value: Unknown<'_>) -> Result<BigInt> {
   match value.get_type()? {
     ValueType::Object => {
-      if let Ok(buffer) = unsafe { value.cast::<Buffer>() } {
-        return Ok(BigInt::from(buffer.as_ref().as_ptr() as u64));
-      }
-      if let Ok(arraybuffer) = unsafe { value.cast::<ArrayBuffer>() } {
-        return Ok(BigInt::from(arraybuffer.as_ref().as_ptr() as u64));
-      }
-      if let Ok(typed) = unsafe { value.cast::<TypedArray>() } {
-        return Ok(BigInt::from(
-          typed
-            .arraybuffer
-            .as_ref()
-            .as_ptr()
-            .wrapping_add(typed.byte_offset) as u64,
-        ));
+      if let Some(pointer) = raw_bytes_pointer(value) {
+        return Ok(BigInt::from(pointer as u64));
       }
       Err(Error::new(
         Status::InvalidArg,

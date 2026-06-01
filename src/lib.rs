@@ -5,6 +5,7 @@ mod memory;
 mod signature;
 mod targets;
 mod types;
+mod value_helpers;
 
 pub use dynamic_library::{dlopen, CallSpec, DynamicLibrary};
 pub use memory::{

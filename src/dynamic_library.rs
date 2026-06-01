@@ -16,97 +16,99 @@ use napi_derive::napi;
 
 use crate::signature::{compile_signature, CompiledSignature};
 
-struct PreparedFunctionArg {
-  target: *const dyn crate::targets::TypedTarget,
-  storage: NonNull<u8>,
+struct RawStorage {
+  pointer: NonNull<u8>,
   layout: Layout,
 }
 
-impl PreparedFunctionArg {
-  fn new(target: &dyn crate::targets::TypedTarget) -> Result<Self> {
-    let layout = target.function_arg_layout();
-    let storage = if layout.size() == 0 {
+impl RawStorage {
+  fn new(layout: Layout) -> Result<Self> {
+    let pointer = if layout.size() == 0 {
       NonNull::dangling()
     } else {
       let raw = unsafe { alloc(layout) };
       NonNull::new(raw)
         .ok_or_else(|| Error::new(Status::GenericFailure, "Allocation failed".to_owned()))?
     };
+    Ok(Self { pointer, layout })
+  }
+
+  fn as_mut_ptr(&self) -> *mut u8 {
+    self.pointer.as_ptr()
+  }
+}
+
+impl Drop for RawStorage {
+  fn drop(&mut self) {
+    if self.layout.size() != 0 {
+      unsafe { dealloc(self.pointer.as_ptr(), self.layout) };
+    }
+  }
+}
+
+struct PreparedFunctionArg<'a> {
+  target: &'a dyn crate::targets::TypedTarget,
+  storage: RawStorage,
+}
+
+impl<'a> PreparedFunctionArg<'a> {
+  fn new(target: &'a dyn crate::targets::TypedTarget) -> Result<Self> {
     Ok(Self {
-      target: target as *const dyn crate::targets::TypedTarget,
-      storage,
-      layout,
+      target,
+      storage: RawStorage::new(target.function_arg_layout())?,
     })
   }
 
   fn as_ptr(&self) -> *mut u8 {
-    self.storage.as_ptr()
+    self.storage.as_mut_ptr()
   }
 
   unsafe fn as_arg(&self) -> Arg<'_> {
-    unsafe { (&*self.target).function_arg_as_ffi_arg(self.storage.as_ptr()) }
-  }
-}
-
-impl Drop for PreparedFunctionArg {
-  fn drop(&mut self) {
     unsafe {
-      (&*self.target).drop_function_arg(self.storage.as_ptr());
-      if self.layout.size() != 0 {
-        dealloc(self.storage.as_ptr(), self.layout);
-      }
+      self
+        .target
+        .function_arg_as_ffi_arg(self.storage.as_mut_ptr())
     }
   }
 }
 
-struct PreparedCallbackReturn {
-  target: *const dyn crate::targets::TypedTarget,
-  storage: NonNull<u8>,
-  layout: Layout,
+impl Drop for PreparedFunctionArg<'_> {
+  fn drop(&mut self) {
+    unsafe { self.target.drop_function_arg(self.storage.as_mut_ptr()) };
+  }
 }
 
-impl PreparedCallbackReturn {
-  fn new(target: &dyn crate::targets::TypedTarget) -> Result<Self> {
-    let layout = target.callback_return_layout();
-    let storage = if layout.size() == 0 {
-      NonNull::dangling()
-    } else {
-      let raw = unsafe { alloc(layout) };
-      NonNull::new(raw)
-        .ok_or_else(|| Error::new(Status::GenericFailure, "Allocation failed".to_owned()))?
-    };
+struct PreparedCallbackReturn<'a> {
+  target: &'a dyn crate::targets::TypedTarget,
+  storage: RawStorage,
+}
+
+impl<'a> PreparedCallbackReturn<'a> {
+  fn new(target: &'a dyn crate::targets::TypedTarget) -> Result<Self> {
     Ok(Self {
-      target: target as *const dyn crate::targets::TypedTarget,
-      storage,
-      layout,
+      target,
+      storage: RawStorage::new(target.callback_return_layout())?,
     })
   }
 
   fn as_mut_ptr(&self) -> *mut u8 {
-    self.storage.as_ptr()
+    self.storage.as_mut_ptr()
   }
 
   unsafe fn copy_into_result(&self, result: &mut *mut c_void) {
-    let value_ptr = unsafe { (&*self.target).callback_return_ptr(self.storage.as_ptr()) };
-    let copy_size = unsafe { (&*self.target).callback_return_copy_size() };
+    let value_ptr = unsafe { self.target.callback_return_ptr(self.storage.as_mut_ptr()) };
+    let copy_size = self.target.callback_return_copy_size();
     if copy_size != 0 {
       let src = value_ptr.cast::<u8>();
       let dst = (result as *mut *mut c_void).cast::<u8>();
-      for offset in 0..copy_size {
-        unsafe { dst.add(offset).write(src.add(offset).read()) };
-      }
+      unsafe { std::ptr::copy_nonoverlapping(src, dst, copy_size) };
     }
   }
 }
 
-impl Drop for PreparedCallbackReturn {
+impl Drop for PreparedCallbackReturn<'_> {
   fn drop(&mut self) {
-    unsafe {
-      (&*self.target).drop_callback_return(self.storage.as_ptr());
-      if self.layout.size() != 0 {
-        dealloc(self.storage.as_ptr(), self.layout);
-      }
-    }
+    unsafe { self.target.drop_callback_return(self.storage.as_mut_ptr()) };
   }
 }
 
@@ -151,6 +153,16 @@ fn abort_callback(message: &str) -> ! {
 }
 
 impl CallbackContext {
+  unsafe fn zero_result(&self, result: &mut *mut c_void) {
+    unsafe {
+      std::ptr::write_bytes(
+        (result as *mut *mut c_void).cast::<u8>(),
+        0,
+        self.signature.ret.function_arg_layout().size(),
+      )
+    };
+  }
+
   unsafe fn invoke(&mut self, result: &mut *mut c_void, args: *const *const c_void) {
     if self.thread_id != std::thread::current().id() {
       abort_callback("Callbacks can only be invoked on the system thread they were created on")
@@ -176,24 +188,12 @@ impl CallbackContext {
         Some(reference) => reference.get_function(&env)?,
         None => {
           self.function_state = CallbackFunctionState::Collected;
-          unsafe {
-            std::ptr::write_bytes(
-              (result as *mut *mut c_void).cast::<u8>(),
-              0,
-              self.signature.ret.function_arg_layout().size(),
-            )
-          };
+          unsafe { self.zero_result(result) };
           return Ok(());
         }
       },
       CallbackFunctionState::Collected => {
-        unsafe {
-          std::ptr::write_bytes(
-            (result as *mut *mut c_void).cast::<u8>(),
-            0,
-            self.signature.ret.function_arg_layout().size(),
-          )
-        };
+        unsafe { self.zero_result(result) };
         return Ok(());
       }
     };

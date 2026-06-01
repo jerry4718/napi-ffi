@@ -6,6 +6,8 @@ use libffi::middle::{Arg, Cif, CodePtr, Type as FFIType};
 use napi::bindgen_prelude::*;
 use napi::Env;
 
+use crate::value_helpers::raw_bytes_pointer;
+
 pub trait TypedTarget: Send + Sync + 'static {
   fn type_name(&self) -> &'static str;
   fn ffi_type(&self) -> FFIType;
@@ -84,11 +86,23 @@ fn bigint_to_i64(value: &BigInt, message: &str) -> Result<i64> {
   Ok(raw)
 }
 
+fn cast_f64(value: Unknown<'_>) -> Result<f64> {
+  unsafe { value.cast() }
+}
+
+fn cast_bigint(value: Unknown<'_>) -> Result<BigInt> {
+  unsafe { value.cast() }
+}
+
+fn cast_string(value: Unknown<'_>) -> Result<String> {
+  unsafe { value.cast() }
+}
+
 fn raw_pointer_from_unknown(value: Unknown<'_>, index: usize) -> Result<*mut c_void> {
   match value.get_type()? {
     ValueType::Null | ValueType::Undefined => Ok(ptr::null_mut()),
     ValueType::BigInt => {
-      let bigint: BigInt = unsafe { value.cast()? };
+      let bigint = cast_bigint(value)?;
       let raw = bigint_to_u64(
         &bigint,
         &format!("Argument {index} must be a non-negative pointer bigint"),
@@ -97,26 +111,9 @@ fn raw_pointer_from_unknown(value: Unknown<'_>, index: usize) -> Result<*mut c_v
         .map_err(|_| invalid_arg_value("Argument exceeds the platform pointer range"))?;
       Ok(ptr_value as *mut c_void)
     }
-    ValueType::Object => {
-      if let Ok(buffer) = unsafe { value.cast::<Buffer>() } {
-        return Ok(buffer.as_ref().as_ptr() as *mut c_void);
-      }
-      if let Ok(arraybuffer) = unsafe { value.cast::<ArrayBuffer>() } {
-        return Ok(arraybuffer.as_ref().as_ptr() as *mut c_void);
-      }
-      if let Ok(typed) = unsafe { value.cast::<TypedArray>() } {
-        return Ok(
-          typed
-            .arraybuffer
-            .as_ref()
-            .as_ptr()
-            .wrapping_add(typed.byte_offset) as *mut c_void,
-        );
-      }
-      Err(invalid_arg_value(
-        "Argument must be a buffer, an ArrayBuffer, a string, or a bigint",
-      ))
-    }
+    ValueType::Object => raw_bytes_pointer(value).ok_or_else(|| {
+      invalid_arg_value("Argument must be a buffer, an ArrayBuffer, a string, or a bigint")
+    }),
     _ => Err(invalid_arg_value(
       "Argument must be a buffer, an ArrayBuffer, a string, or a bigint",
     )),
@@ -134,12 +131,14 @@ fn pointer_argument_from_unknown(
 ) -> Result<PointerArgumentCategory> {
   match value.get_type()? {
     ValueType::String => {
-      let string: String = unsafe { value.cast()? };
+      let string = cast_string(value)?;
       let c_string = CString::new(string)
         .map_err(|_| invalid_arg_value(format!("Argument {index} must not contain null bytes")))?;
       Ok(PointerArgumentCategory::String(c_string))
     }
-    _ => Ok(PointerArgumentCategory::Regular(raw_pointer_from_unknown(value, index)?)),
+    _ => Ok(PointerArgumentCategory::Regular(raw_pointer_from_unknown(
+      value, index,
+    )?)),
   }
 }
 
@@ -238,7 +237,7 @@ macro_rules! numeric_target {
 }
 
 fn number_to_i8(value: Unknown<'_>, index: usize) -> Result<i8> {
-  let number: f64 = unsafe { value.cast()? };
+  let number = cast_f64(value)?;
   if number.fract() != 0.0 || !(-128.0..=127.0).contains(&number) {
     return Err(invalid_arg_value(format!(
       "Argument {index} must be an int8"
@@ -248,7 +247,7 @@ fn number_to_i8(value: Unknown<'_>, index: usize) -> Result<i8> {
 }
 
 fn number_to_u8(value: Unknown<'_>, index: usize) -> Result<u8> {
-  let number: f64 = unsafe { value.cast()? };
+  let number = cast_f64(value)?;
   if number.fract() != 0.0 || !(0.0..=255.0).contains(&number) {
     return Err(invalid_arg_value(format!(
       "Argument {index} must be a uint8"
@@ -258,7 +257,7 @@ fn number_to_u8(value: Unknown<'_>, index: usize) -> Result<u8> {
 }
 
 fn number_to_i16(value: Unknown<'_>, index: usize) -> Result<i16> {
-  let number: f64 = unsafe { value.cast()? };
+  let number = cast_f64(value)?;
   if number.fract() != 0.0 || !(-32768.0..=32767.0).contains(&number) {
     return Err(invalid_arg_value(format!(
       "Argument {index} must be an int16"
@@ -268,7 +267,7 @@ fn number_to_i16(value: Unknown<'_>, index: usize) -> Result<i16> {
 }
 
 fn number_to_u16(value: Unknown<'_>, index: usize) -> Result<u16> {
-  let number: f64 = unsafe { value.cast()? };
+  let number = cast_f64(value)?;
   if number.fract() != 0.0 || !(0.0..=65535.0).contains(&number) {
     return Err(invalid_arg_value(format!(
       "Argument {index} must be a uint16"
@@ -278,7 +277,7 @@ fn number_to_u16(value: Unknown<'_>, index: usize) -> Result<u16> {
 }
 
 fn number_to_i32(value: Unknown<'_>, index: usize) -> Result<i32> {
-  let number: f64 = unsafe { value.cast()? };
+  let number = cast_f64(value)?;
   if !number.is_finite()
     || number.fract() != 0.0
     || !((i32::MIN as f64)..=(i32::MAX as f64)).contains(&number)
@@ -291,7 +290,7 @@ fn number_to_i32(value: Unknown<'_>, index: usize) -> Result<i32> {
 }
 
 fn number_to_u32(value: Unknown<'_>, index: usize) -> Result<u32> {
-  let number: f64 = unsafe { value.cast()? };
+  let number = cast_f64(value)?;
   if !number.is_finite() || number.fract() != 0.0 || !(0.0..=(u32::MAX as f64)).contains(&number) {
     return Err(invalid_arg_value(format!(
       "Argument {index} must be a uint32"
@@ -301,27 +300,27 @@ fn number_to_u32(value: Unknown<'_>, index: usize) -> Result<u32> {
 }
 
 fn bigint_to_i64_arg(value: Unknown<'_>, index: usize) -> Result<i64> {
-  let bigint: BigInt = unsafe { value.cast()? };
+  let bigint = cast_bigint(value)?;
   bigint_to_i64(&bigint, &format!("Argument {index} must be an int64"))
 }
 
 fn bigint_to_u64_arg(value: Unknown<'_>, index: usize) -> Result<u64> {
-  let bigint: BigInt = unsafe { value.cast()? };
+  let bigint = cast_bigint(value)?;
   bigint_to_u64(&bigint, &format!("Argument {index} must be a uint64"))
 }
 
 fn number_to_f32(value: Unknown<'_>, _index: usize) -> Result<f32> {
-  let number: f64 = unsafe { value.cast()? };
+  let number = cast_f64(value)?;
   Ok(number as f32)
 }
 
 fn number_to_f64(value: Unknown<'_>, _index: usize) -> Result<f64> {
-  let number: f64 = unsafe { value.cast()? };
+  let number = cast_f64(value)?;
   Ok(number)
 }
 
 fn callback_to_i8(value: Unknown<'_>) -> Result<i8> {
-  let number: f64 = unsafe { value.cast()? };
+  let number = cast_f64(value)?;
   if number.fract() != 0.0 || !(-128.0..=127.0).contains(&number) {
     return Err(invalid_callback_return());
   }
@@ -329,7 +328,7 @@ fn callback_to_i8(value: Unknown<'_>) -> Result<i8> {
 }
 
 fn callback_to_u8(value: Unknown<'_>) -> Result<u8> {
-  let number: f64 = unsafe { value.cast()? };
+  let number = cast_f64(value)?;
   if number.fract() != 0.0 || !(0.0..=255.0).contains(&number) {
     return Err(invalid_callback_return());
   }
@@ -337,7 +336,7 @@ fn callback_to_u8(value: Unknown<'_>) -> Result<u8> {
 }
 
 fn callback_to_i16(value: Unknown<'_>) -> Result<i16> {
-  let number: f64 = unsafe { value.cast()? };
+  let number = cast_f64(value)?;
   if number.fract() != 0.0 || !(-32768.0..=32767.0).contains(&number) {
     return Err(invalid_callback_return());
   }
@@ -345,7 +344,7 @@ fn callback_to_i16(value: Unknown<'_>) -> Result<i16> {
 }
 
 fn callback_to_u16(value: Unknown<'_>) -> Result<u16> {
-  let number: f64 = unsafe { value.cast()? };
+  let number = cast_f64(value)?;
   if number.fract() != 0.0 || !(0.0..=65535.0).contains(&number) {
     return Err(invalid_callback_return());
   }
@@ -353,7 +352,7 @@ fn callback_to_u16(value: Unknown<'_>) -> Result<u16> {
 }
 
 fn callback_to_i32(value: Unknown<'_>) -> Result<i32> {
-  let number: f64 = unsafe { value.cast()? };
+  let number = cast_f64(value)?;
   if !number.is_finite()
     || number.fract() != 0.0
     || !((i32::MIN as f64)..=(i32::MAX as f64)).contains(&number)
@@ -364,7 +363,7 @@ fn callback_to_i32(value: Unknown<'_>) -> Result<i32> {
 }
 
 fn callback_to_u32(value: Unknown<'_>) -> Result<u32> {
-  let number: f64 = unsafe { value.cast()? };
+  let number = cast_f64(value)?;
   if !number.is_finite() || number.fract() != 0.0 || !(0.0..=(u32::MAX as f64)).contains(&number) {
     return Err(invalid_callback_return());
   }
@@ -372,7 +371,7 @@ fn callback_to_u32(value: Unknown<'_>) -> Result<u32> {
 }
 
 fn callback_to_i64(value: Unknown<'_>) -> Result<i64> {
-  let bigint: BigInt = unsafe { value.cast().map_err(|_| invalid_callback_return())? };
+  let bigint = cast_bigint(value).map_err(|_| invalid_callback_return())?;
   bigint_to_i64(
     &bigint,
     "Callback returned invalid value for declared FFI type",
@@ -381,7 +380,7 @@ fn callback_to_i64(value: Unknown<'_>) -> Result<i64> {
 }
 
 fn callback_to_u64(value: Unknown<'_>) -> Result<u64> {
-  let bigint: BigInt = unsafe { value.cast().map_err(|_| invalid_callback_return())? };
+  let bigint = cast_bigint(value).map_err(|_| invalid_callback_return())?;
   bigint_to_u64(
     &bigint,
     "Callback returned invalid value for declared FFI type",
@@ -390,12 +389,12 @@ fn callback_to_u64(value: Unknown<'_>) -> Result<u64> {
 }
 
 fn callback_to_f32(value: Unknown<'_>) -> Result<f32> {
-  let number: f64 = unsafe { value.cast().map_err(|_| invalid_callback_return())? };
+  let number = cast_f64(value).map_err(|_| invalid_callback_return())?;
   Ok(number as f32)
 }
 
 fn callback_to_f64(value: Unknown<'_>) -> Result<f64> {
-  let number: f64 = unsafe { value.cast().map_err(|_| invalid_callback_return())? };
+  let number = cast_f64(value).map_err(|_| invalid_callback_return())?;
   Ok(number)
 }
 
@@ -667,7 +666,7 @@ impl TypedTarget for StringTarget {
     let storage = storage.cast::<CStringArgStorage>();
     match value.get_type()? {
       ValueType::String => {
-        let string: String = unsafe { value.cast()? };
+        let string = cast_string(value)?;
         let c_string = CString::new(string).map_err(|_| {
           invalid_arg_value(format!("Argument {index} must not contain null bytes"))
         })?;
@@ -764,7 +763,7 @@ impl TypedTarget for StringTarget {
         )
       },
       Ok(ValueType::String) => {
-        let string: String = unsafe { value.cast().map_err(|_| invalid_callback_return())? };
+        let string = cast_string(value).map_err(|_| invalid_callback_return())?;
         let c_string = CString::new(string).map_err(|_| invalid_callback_return())?;
         unsafe {
           ptr::write(
