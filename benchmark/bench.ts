@@ -59,13 +59,6 @@ if (addI32InJs(10, 32) !== expected) {
   throw new Error('js benchmark setup failed')
 }
 
-for (let i = 0; i < 1000; i++) {
-  napiFfiAddI32(10, 32)
-  ffiRsAddI32(10, 32)
-  nodeFfiAddI32?.(10, 32)
-  addI32InJs(10, 32)
-}
-
 const bench = new Bench()
 
 bench.add('napi-ffi add_i32', () => {

@@ -11,7 +11,7 @@ use libloading::os::unix::Library as UnixLibrary;
 use libloading::os::windows::Library as WindowsLibrary;
 use libloading::Library;
 use napi::bindgen_prelude::*;
-use napi::{Env, UnknownRef};
+use napi::Env;
 use napi_derive::napi;
 
 use crate::signature::{compile_signature, CompiledSignature};
@@ -117,26 +117,49 @@ struct FunctionBinding {
   signature: CompiledSignature,
 }
 
-#[napi(custom_finalize)]
-pub struct CallbackHandleHolder {
-  function: UnknownRef<false>,
+#[napi]
+pub struct CallbackRef {
+  env: sys::napi_env,
+  reference: sys::napi_ref,
 }
 
-impl CallbackHandleHolder {
+impl CallbackRef {
+  fn new(env: &Env, callback: &Function<'_, (), Unknown<'_>>) -> Result<Self> {
+    let mut reference = std::ptr::null_mut();
+    check_status!(
+      unsafe { sys::napi_create_reference(env.raw(), callback.raw(), 1, &mut reference) },
+      "Create callback reference failed"
+    )?;
+    Ok(Self {
+      env: env.raw(),
+      reference,
+    })
+  }
+
   fn get_function<'env>(&self, env: &'env Env) -> Result<Unknown<'env>> {
-    self.function.get_value(env)
+    let mut value = std::ptr::null_mut();
+    check_status!(
+      unsafe { sys::napi_get_reference_value(env.raw(), self.reference, &mut value) },
+      "Get callback reference value failed"
+    )?;
+    Ok(unsafe { Unknown::from_raw_unchecked(env.raw(), value) })
   }
 }
 
-impl ObjectFinalize for CallbackHandleHolder {
-  fn finalize(self, env: Env) -> Result<()> {
-    self.function.unref(&env)
+impl Drop for CallbackRef {
+  fn drop(&mut self) {
+    let status = unsafe { sys::napi_delete_reference(self.env, self.reference) };
+    debug_assert_eq!(
+      status,
+      sys::Status::napi_ok,
+      "Drop callback reference failed"
+    );
   }
 }
 
 enum CallbackFunctionState {
-  Strong(Reference<CallbackHandleHolder>),
-  Weak(WeakReference<CallbackHandleHolder>),
+  Strong(Reference<CallbackRef>),
+  Weak(WeakReference<CallbackRef>),
   Collected,
 }
 
@@ -449,10 +472,7 @@ impl DynamicLibrary {
       .ok_or_else(|| Error::new(Status::InvalidArg, "Callback must be a function".to_owned()))?;
     let compiled = compile_signature(definition)?;
     validate_callback_signature(&compiled)?;
-    let function = callback.into_unknown(env)?.create_ref()?;
-    let holder = CallbackHandleHolder {
-      function: unsafe { std::mem::transmute::<UnknownRef<true>, UnknownRef<false>>(function) },
-    };
+    let holder = CallbackRef::new(env, &callback)?;
     let strong = holder.into_reference(Env::from_raw(env.raw()))?;
     let mut context = Box::new(CallbackContext {
       env: env.raw(),
