@@ -1,87 +1,237 @@
-# `@napi-rs/package-template`
+# `@ylcc/napi-ffi`
 
-![https://github.com/napi-rs/package-template/actions](https://github.com/napi-rs/package-template/workflows/CI/badge.svg)
+A native FFI library for Node.js, implemented with `napi-rs`.
 
-> Template project for writing node packages with napi-rs.
+## Why this project exists
 
-# Usage
+This project is intended to provide a userland implementation of `node:ffi`.
 
-1. Click **Use this template**.
-2. **Clone** your project.
-3. Run `pnpm install` to install dependencies.
-4. Run `pnpm napi rename -n [@your-scope/package-name] -b [binary-name]` command under the project folder to rename your package.
+The goal is straightforward:
 
-## Install this test package
+- let users write code in a `node:ffi`-style API today
+- make that code easy to migrate later
+- keep the surface area close enough that code built on this library can switch to `node:ffi` with minimal or no application-level changes
+
+In other words, this package aims to be a practical compatibility layer for people who want the ergonomics of `node:ffi` before it is universally available or stable enough for their use case.
+
+## Status
+
+This package already supports the core building blocks needed for many FFI scenarios:
+
+- dynamic library loading
+- symbol lookup
+- typed foreign function calls
+- callbacks from native code into JavaScript
+- raw pointer-based memory access helpers
+- string, `Buffer`, `ArrayBuffer`, and typed-array interop
+
+## Installation
 
 ```bash
-pnpm add @napi-rs/package-template
+pnpm add @ylcc/napi-ffi
 ```
 
-## Usage
+## Quick start
+
+### Load a library and call native functions
+
+```js
+const ffi = require('@ylcc/napi-ffi')
+
+const { lib, functions } = ffi.dlopen('./libmath.so', {
+  add_i32: {
+    parameters: ['i32', 'i32'],
+    result: 'i32',
+  },
+  multiply_f64: {
+    parameters: ['f64', 'f64'],
+    result: 'f64',
+  },
+})
+
+try {
+  console.log(functions.add_i32(20, 22))
+  console.log(functions.multiply_f64(6, 7))
+} finally {
+  lib.close()
+}
+```
+
+### Use strings and pointers
+
+```js
+const ffi = require('@ylcc/napi-ffi')
+
+const { lib, functions } = ffi.dlopen('./libstrings.so', {
+  string_length: {
+    parameters: ['pointer'],
+    result: 'u64',
+  },
+  string_duplicate: {
+    parameters: ['pointer'],
+    result: 'pointer',
+  },
+  free_string: {
+    parameters: ['pointer'],
+    result: 'void',
+  },
+})
+
+try {
+  console.log(functions.string_length('hello ffi'))
+
+  const ptr = functions.string_duplicate('copied from JS')
+  console.log(ffi.toString(ptr))
+  functions.free_string(ptr)
+} finally {
+  lib.close()
+}
+```
+
+### Register a JavaScript callback
+
+```js
+const ffi = require('@ylcc/napi-ffi')
+
+const { lib, functions } = ffi.dlopen('./libcallbacks.so', {
+  call_binary_int_callback: {
+    parameters: ['function', 'i32', 'i32'],
+    result: 'i32',
+  },
+})
+
+const callback = lib.registerCallback(
+  {
+    parameters: ['i32', 'i32'],
+    result: 'i32',
+  },
+  (a, b) => a + b,
+)
+
+try {
+  console.log(functions.call_binary_int_callback(callback, 19, 23))
+} finally {
+  lib.unregisterCallback(callback)
+  lib.close()
+}
+```
+
+### Read and write native memory
+
+```js
+const ffi = require('@ylcc/napi-ffi')
+
+const { lib, functions } = ffi.dlopen('./libmemory.so', {
+  allocate_memory: {
+    parameters: ['u64'],
+    result: 'pointer',
+  },
+  deallocate_memory: {
+    parameters: ['pointer'],
+    result: 'void',
+  },
+})
+
+const ptr = functions.allocate_memory(16n)
+
+try {
+  ffi.setInt32(ptr, 0, 42)
+  ffi.setFloat64(ptr, 8, 3.5)
+
+  console.log(ffi.getInt32(ptr, 0))
+  console.log(ffi.getFloat64(ptr, 8))
+} finally {
+  functions.deallocate_memory(ptr)
+  lib.close()
+}
+```
+
+## API overview
+
+### Main exports
+
+- `dlopen(path?, definitions?)`
+- `dlclose(handle)`
+- `dlsym(handle, symbol)`
+- `DynamicLibrary`
+- `types`
+- memory helpers such as `getInt32`, `setInt32`, `toString`, `toBuffer`, `toArrayBuffer`, and `getRawPointer`
+
+### Supported FFI types
+
+- `void`
+- `i8`, `u8`, `bool`, `char`
+- `i16`, `u16`
+- `i32`, `u32`
+- `i64`, `u64`
+- `f32`, `f64`
+- `pointer`
+- `string`
+- `buffer`
+- `arraybuffer`
+- `function`
+
+Aliases such as `int32`, `uint64`, `float`, `double`, `ptr`, and `str` are also supported.
+
+## Compatibility notes
+
+This project is designed around a `node:ffi`-like programming model, but it is not a byte-for-byte clone of every current or future Node core detail.
+
+The compatibility goal is:
+
+- similar concepts
+- similar signatures
+- similar calling style
+- low-friction migration path for users who want to move to `node:ffi`
+
+If you are building on top of this package, it is a good idea to keep your FFI definitions isolated behind a small adapter module. That makes future switching to `node:ffi` even easier.
+
+## Type behavior
+
+A few behaviors are intentionally strict:
+
+- 64-bit integers use JavaScript `BigInt`
+- smaller integer and floating-point types use JavaScript `Number`
+- pointer-like arguments accept `bigint`, `Buffer`, `ArrayBuffer`, typed arrays, `null`, and `undefined`
+- string returns are represented as pointers, so you control ownership and freeing explicitly
+
+## Development
+
+### Requirements
+
+- Rust
+- Node.js
+- `pnpm`
+- `corepack enable`
 
 ### Build
 
-After `pnpm build` command, you can see `package-template.[darwin|win32|linux].node` file in project root. This is the native addon built from [lib.rs](./src/lib.rs).
+```bash
+pnpm install
+pnpm build
+```
 
 ### Test
 
-With [ava](https://github.com/avajs/ava), run `pnpm test` to testing native addon. You can also switch to another testing framework if you want.
-
-### CI
-
-With GitHub Actions, each commit and pull request will be built and tested automatically in [`node@18`, `node@20`] x [`macOS`, `Linux`, `Windows`] matrix. You will never be afraid of the native addon broken in these platforms.
-
-### Release
-
-Release native package is very difficult in old days. Native packages may ask developers who use it to install `build toolchain` like `gcc/llvm`, `node-gyp` or something more.
-
-With `GitHub actions`, we can easily prebuild a `binary` for major platforms. And with `N-API`, we should never be afraid of **ABI Compatible**.
-
-The other problem is how to deliver prebuild `binary` to users. Downloading it in `postinstall` script is a common way that most packages do it right now. The problem with this solution is it introduced many other packages to download binary that has not been used by `runtime codes`. The other problem is some users may not easily download the binary from `GitHub/CDN` if they are behind a private network (But in most cases, they have a private NPM mirror).
-
-In this package, we choose a better way to solve this problem. We release different `npm packages` for different platforms. And add it to `optionalDependencies` before releasing the `Major` package to npm.
-
-`NPM` will choose which native package should download from `registry` automatically. You can see [npm](./npm) dir for details. And you can also run `pnpm add @napi-rs/package-template` to see how it works.
-
-## Develop requirements
-
-- Install the latest `Rust`
-- Install `Node.js@16+` which fully supported `Node-API`
-- Run `corepack enable`
-
-## Test in local
-
-- pnpm
-- pnpm build
-- pnpm test
-
-And you will see:
-
 ```bash
-$ ava --verbose
-
-  ✔ sync function from native code
-  ✔ sleep function from native code (201ms)
-  ─
-
-  2 tests passed
-✨  Done in 1.12s.
+pnpm test
 ```
 
-## Release package
-
-Ensure you have set your **NPM_TOKEN** in the `GitHub` project setting.
-
-In `Settings -> Secrets`, add **NPM_TOKEN** into it.
-
-When you want to release the package:
+### Lint and format
 
 ```bash
-npm version [<newversion> | major | minor | patch | premajor | preminor | prepatch | prerelease [--preid=<prerelease-id>] | from-git]
-
-git push
+pnpm lint
+pnpm format
+cargo fmt -- --check
+cargo clippy
 ```
 
-GitHub actions will do the rest job for you.
+## Notes for contributors
 
-> WARN: Don't run `npm publish` manually.
+- The native addon is implemented in Rust under `src/`.
+- `index.js` is generated/wrapper-facing glue and should not be treated like hand-written API design documentation.
+- Error wording matters in several validation paths because tests depend on it.
+
+## License
+
+MIT
