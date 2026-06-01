@@ -88,7 +88,7 @@ impl PreparedCallbackReturn {
 
   unsafe fn copy_into_result(&self, result: &mut *mut c_void) {
     let value_ptr = unsafe { (&*self.target).callback_return_ptr(self.storage.as_ptr()) };
-    let copy_size = self.layout.size();
+    let copy_size = unsafe { (&*self.target).callback_return_copy_size() };
     if copy_size != 0 {
       let src = value_ptr.cast::<u8>();
       let dst = (result as *mut *mut c_void).cast::<u8>();
@@ -176,24 +176,22 @@ impl CallbackContext {
         Some(reference) => reference.get_function(&env)?,
         None => {
           self.function_state = CallbackFunctionState::Collected;
-          let prepared = PreparedCallbackReturn::new(self.signature.ret.as_ref())?;
           unsafe {
             std::ptr::write_bytes(
               (result as *mut *mut c_void).cast::<u8>(),
               0,
-              prepared.layout.size(),
+              self.signature.ret.function_arg_layout().size(),
             )
           };
           return Ok(());
         }
       },
       CallbackFunctionState::Collected => {
-        let prepared = PreparedCallbackReturn::new(self.signature.ret.as_ref())?;
         unsafe {
           std::ptr::write_bytes(
             (result as *mut *mut c_void).cast::<u8>(),
             0,
-            prepared.layout.size(),
+            self.signature.ret.function_arg_layout().size(),
           )
         };
         return Ok(());
@@ -305,6 +303,17 @@ fn pointer_from_bigint(pointer: &BigInt) -> Result<usize> {
 
 fn callback_not_found() -> Error {
   Error::new(Status::InvalidArg, "Callback not found".to_owned())
+}
+
+fn validate_callback_signature(signature: &CompiledSignature) -> Result<()> {
+  if signature.ret.type_name() == "string" {
+    return Err(Error::new(
+      Status::InvalidArg,
+      "Callback result type cannot be string; use pointer and manage the returned memory explicitly"
+        .to_owned(),
+    ));
+  }
+  Ok(())
 }
 
 fn callback_pointer_from_closure(closure: &Closure<'_>) -> Result<BigInt> {
@@ -439,6 +448,7 @@ impl DynamicLibrary {
     let callback = callback
       .ok_or_else(|| Error::new(Status::InvalidArg, "Callback must be a function".to_owned()))?;
     let compiled = compile_signature(definition)?;
+    validate_callback_signature(&compiled)?;
     let function = callback.into_unknown(env)?.create_ref()?;
     let holder = CallbackHandleHolder {
       function: unsafe { std::mem::transmute::<UnknownRef<true>, UnknownRef<false>>(function) },

@@ -275,6 +275,7 @@ FFI_EXPORT int32_t get_scratch(void) {
 typedef int32_t (*IntCallback)(int32_t);
 typedef int8_t (*Int8Callback)(int8_t);
 typedef const char* (*PointerCallback)(void);
+typedef const char* (*StringReturnCallback)(void);
 typedef void (*VoidCallback)(void);
 typedef void (*StringCallback)(const char*);
 typedef int32_t (*BinaryIntCallback)(int32_t, int32_t);
@@ -302,6 +303,20 @@ FFI_EXPORT int32_t call_pointer_callback_is_null(PointerCallback callback) {
 
   // NOLINTNEXTLINE (readability/null_usage)
   return callback() == NULL;
+}
+
+FFI_EXPORT int32_t call_string_return_callback_matches(StringReturnCallback callback,
+                                                       const char* expected) {
+  if (!callback) {
+    return 0;
+  }
+
+  const char* value = callback();
+  if (!value || !expected) {
+    return value == expected;
+  }
+
+  return strcmp(value, expected) == 0;
 }
 
 FFI_EXPORT void call_void_callback(VoidCallback callback) {

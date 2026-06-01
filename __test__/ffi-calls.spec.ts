@@ -162,14 +162,19 @@ test('ffi callbacks can be registered and invoked', () => {
     (a, b) => a + b,
   );
 
-  try {
-    assert.strictEqual(symbols.call_int_callback(intCallback, 21), 42);
-    symbols.call_string_callback(stringCallback, cString('hello callback'));
-    assert.deepStrictEqual(seen, ['hello callback']);
-    assert.strictEqual(symbols.call_binary_int_callback(binaryCallback, 19, 23), 42);
+    try {
+      assert.strictEqual(symbols.call_int_callback(intCallback, 21), 42);
+      symbols.call_string_callback(stringCallback, cString('hello callback'));
+      assert.deepStrictEqual(seen, ['hello callback']);
+      assert.strictEqual(symbols.call_binary_int_callback(binaryCallback, 19, 23), 42);
 
-    const nullPointerCallback = lib.registerCallback({ result: 'pointer' }, () => null);
-    const undefinedPointerCallback = lib.registerCallback({ result: 'pointer' }, () => undefined);
+      assert.throws(
+        () => lib.registerCallback({ result: 'string' }, () => 'hello callback'),
+        /Callback result type cannot be string; use pointer and manage the returned memory explicitly/,
+      );
+
+      const nullPointerCallback = lib.registerCallback({ result: 'pointer' }, () => null);
+      const undefinedPointerCallback = lib.registerCallback({ result: 'pointer' }, () => undefined);
     try {
       assert.strictEqual(symbols.call_pointer_callback_is_null(nullPointerCallback), 1);
       assert.strictEqual(symbols.call_pointer_callback_is_null(undefinedPointerCallback), 1);

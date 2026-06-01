@@ -65,6 +65,7 @@ const fixtureSymbols = {
   call_int_callback: { parameters: ['pointer', 'i32'], result: 'i32' },
   call_int8_callback: { parameters: ['pointer', 'i8'], result: 'i8' },
   call_pointer_callback_is_null: { parameters: ['pointer'], result: 'i32' },
+  call_string_return_callback_matches: { parameters: ['pointer', 'pointer'], result: 'i32' },
   call_void_callback: { parameters: ['pointer'], result: 'void' },
   call_string_callback: { parameters: ['function', 'pointer'], result: 'void' },
   call_binary_int_callback: { parameters: ['function', 'i32', 'i32'], result: 'i32' },

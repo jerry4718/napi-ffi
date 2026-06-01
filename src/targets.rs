@@ -41,6 +41,10 @@ pub trait TypedTarget: Send + Sync + 'static {
 
   fn callback_return_layout(&self) -> Layout;
 
+  fn callback_return_copy_size(&self) -> usize {
+    self.callback_return_layout().size()
+  }
+
   unsafe fn formalize_callback_return<'env>(
     &self,
     env: &'env Env,
@@ -738,6 +742,10 @@ impl TypedTarget for StringTarget {
     Layout::new::<CStringArgStorage>()
   }
 
+  fn callback_return_copy_size(&self) -> usize {
+    Layout::new::<*const c_char>().size()
+  }
+
   unsafe fn formalize_callback_return<'env>(
     &self,
     _env: &'env Env,
@@ -783,7 +791,7 @@ impl TypedTarget for StringTarget {
   }
 
   unsafe fn callback_return_ptr(&self, storage: *const u8) -> *const c_void {
-    storage.cast::<CStringArgStorage>() as *const c_void
+    unsafe { ptr::addr_of!((*storage.cast::<CStringArgStorage>()).pointer).cast() }
   }
 
   unsafe fn drop_callback_return(&self, storage: *mut u8) {
