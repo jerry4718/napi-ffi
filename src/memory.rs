@@ -54,14 +54,14 @@ fn checked_addr(pointer: BigInt, offset: Option<i64>, access_size: usize) -> Res
     )
   })?;
   base_plus_offset
-      .checked_add(access_size.saturating_sub(1))
-      .map(|_| base_plus_offset)
-      .ok_or_else(|| {
-        Error::new(
-          Status::InvalidArg,
-          "The accessed range exceeds the platform address range".to_owned(),
-        )
-      })
+    .checked_add(access_size.saturating_sub(1))
+    .map(|_| base_plus_offset)
+    .ok_or_else(|| {
+      Error::new(
+        Status::InvalidArg,
+        "The accessed range exceeds the platform address range".to_owned(),
+      )
+    })
 }
 
 macro_rules! read_num {
@@ -70,6 +70,14 @@ macro_rules! read_num {
     pub fn $name(pointer: BigInt, offset: Option<i64>) -> Result<$ty> {
       let address = checked_addr(pointer, offset, $size)?;
       Ok(unsafe { ptr::read_unaligned(address as *const $ty) })
+    }
+  };
+  ($name:ident, $size:expr, $iid:ident: $oty:ty, $rty:ty, $expr:expr) => {
+    #[napi]
+    pub fn $name(pointer: BigInt, offset: Option<i64>) -> Result<$oty> {
+      let address = checked_addr(pointer, offset, $size)?;
+      let $iid = unsafe { ptr::read_unaligned(address as *const $rty) };
+      Ok($expr)
     }
   };
 }
@@ -90,7 +98,7 @@ macro_rules! write_num {
       unsafe { ptr::write_unaligned(address as *mut $wty, $expr) };
       Ok(())
     }
-  }
+  };
 }
 
 read_num!(get_int8, 1, i8);
@@ -99,8 +107,8 @@ read_num!(get_int16, 2, i16);
 read_num!(get_uint16, 2, u16);
 read_num!(get_int32, 4, i32);
 read_num!(get_uint32, 4, u32);
-read_num!(get_int64, 8, BigInt);
-read_num!(get_uint64, 8, BigInt);
+read_num!(get_int64, 8, value: BigInt, i64, BigInt::from(value));
+read_num!(get_uint64, 8, value: BigInt, u64, BigInt::from(value));
 read_num!(get_float32, 4, f32);
 read_num!(get_float64, 8, f64);
 
@@ -122,9 +130,9 @@ pub fn to_string(pointer: BigInt) -> Result<Option<String>> {
     return Ok(None);
   }
   let value = unsafe { CStr::from_ptr(raw as usize as *const c_char) }
-      .to_str()
-      .map_err(|error| Error::new(Status::GenericFailure, error.to_string()))?
-      .to_owned();
+    .to_str()
+    .map_err(|error| Error::new(Status::GenericFailure, error.to_string()))?
+    .to_owned();
   Ok(Some(value))
 }
 
@@ -145,13 +153,13 @@ pub fn to_buffer(env: &Env, pointer: BigInt, len: u32, copy: Option<bool>) -> Re
   }
   let len = len as usize;
   (raw as usize)
-      .checked_add(len.saturating_sub(1))
-      .ok_or_else(|| {
-        Error::new(
-          Status::InvalidArg,
-          "The pointer and length exceed the platform address range".to_owned(),
-        )
-      })?;
+    .checked_add(len.saturating_sub(1))
+    .ok_or_else(|| {
+      Error::new(
+        Status::InvalidArg,
+        "The pointer and length exceed the platform address range".to_owned(),
+      )
+    })?;
   let slice = if len == 0 {
     &[]
   } else {
@@ -188,13 +196,13 @@ pub fn to_array_buffer<'env>(
   }
   let len = len as usize;
   (raw as usize)
-      .checked_add(len.saturating_sub(1))
-      .ok_or_else(|| {
-        Error::new(
-          Status::InvalidArg,
-          "The pointer and length exceed the platform address range".to_owned(),
-        )
-      })?;
+    .checked_add(len.saturating_sub(1))
+    .ok_or_else(|| {
+      Error::new(
+        Status::InvalidArg,
+        "The pointer and length exceed the platform address range".to_owned(),
+      )
+    })?;
   let slice = if len == 0 {
     &[]
   } else {
@@ -220,10 +228,10 @@ pub fn get_raw_pointer(value: Unknown<'_>) -> Result<BigInt> {
       if let Ok(typed) = unsafe { value.cast::<TypedArray>() } {
         return Ok(BigInt::from(
           typed
-              .arraybuffer
-              .as_ref()
-              .as_ptr()
-              .wrapping_add(typed.byte_offset) as u64,
+            .arraybuffer
+            .as_ref()
+            .as_ptr()
+            .wrapping_add(typed.byte_offset) as u64,
         ));
       }
       Err(Error::new(
