@@ -147,7 +147,10 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: bindings-${{ matrix.settings.target }}
-          path: '*.node'
+          path: |
+            *.node
+            native.js
+            native.d.ts
           if-no-files-found: error
   build-freebsd:
     runs-on: ubuntu-latest
@@ -193,7 +196,10 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: bindings-freebsd
-          path: ${{ env.APP_NAME }}.*.node
+          path: |
+            ${{ env.APP_NAME }}.*.node
+            native.js
+            native.d.ts
           if-no-files-found: error
   test-macOS-windows-binding:
     name: Test bindings on ${{ matrix.settings.target }} - node@${{ matrix.node }}
@@ -329,6 +335,11 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           path: artifacts
+      - name: Restore generated JS bindings
+        run: |
+          cp "$(find artifacts -name native.js -print -quit)" native.js
+          cp "$(find artifacts -name native.d.ts -print -quit)" native.d.ts
+        shell: bash
       - name: create npm dirs
         run: pnpm napi create-npm-dirs
       - name: Move artifacts
