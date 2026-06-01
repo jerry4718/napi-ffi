@@ -54,18 +54,18 @@ fn checked_addr(pointer: BigInt, offset: Option<i64>, access_size: usize) -> Res
     )
   })?;
   base_plus_offset
-    .checked_add(access_size.saturating_sub(1))
-    .map(|_| base_plus_offset)
-    .ok_or_else(|| {
-      Error::new(
-        Status::InvalidArg,
-        "The accessed range exceeds the platform address range".to_owned(),
-      )
-    })
+      .checked_add(access_size.saturating_sub(1))
+      .map(|_| base_plus_offset)
+      .ok_or_else(|| {
+        Error::new(
+          Status::InvalidArg,
+          "The accessed range exceeds the platform address range".to_owned(),
+        )
+      })
 }
 
 macro_rules! read_num {
-  ($name:ident, $ty:ty, $size:expr) => {
+  ($name:ident, $size:expr, $ty:ty) => {
     #[napi]
     pub fn $name(pointer: BigInt, offset: Option<i64>) -> Result<$ty> {
       let address = checked_addr(pointer, offset, $size)?;
@@ -75,7 +75,7 @@ macro_rules! read_num {
 }
 
 macro_rules! write_num {
-  ($name:ident, $ty:ty, $size:expr) => {
+  ($name:ident, $size:expr, $ty:ty) => {
     #[napi]
     pub fn $name(pointer: BigInt, offset: i64, value: $ty) -> Result<()> {
       let address = checked_addr(pointer, Some(offset), $size)?;
@@ -83,50 +83,37 @@ macro_rules! write_num {
       Ok(())
     }
   };
+  ($name:ident, $size:expr, $iid:ident: $ity:ty, $wty:ty, $expr:expr) => {
+    #[napi]
+    pub fn $name(pointer: BigInt, offset: i64, $iid: $ity) -> Result<()> {
+      let address = checked_addr(pointer, Some(offset), $size)?;
+      unsafe { ptr::write_unaligned(address as *mut $wty, $expr) };
+      Ok(())
+    }
+  }
 }
 
-read_num!(get_int8, i8, 1);
-read_num!(get_uint8, u8, 1);
-read_num!(get_int16, i16, 2);
-read_num!(get_uint16, u16, 2);
-read_num!(get_int32, i32, 4);
-read_num!(get_uint32, u32, 4);
-read_num!(get_int64, i64, 8);
-read_num!(get_uint64, u64, 8);
-read_num!(get_float32, f32, 4);
-read_num!(get_float64, f64, 8);
+read_num!(get_int8, 1, i8);
+read_num!(get_uint8, 1, u8);
+read_num!(get_int16, 2, i16);
+read_num!(get_uint16, 2, u16);
+read_num!(get_int32, 4, i32);
+read_num!(get_uint32, 4, u32);
+read_num!(get_int64, 8, BigInt);
+read_num!(get_uint64, 8, BigInt);
+read_num!(get_float32, 4, f32);
+read_num!(get_float64, 8, f64);
 
-write_num!(set_int8, i8, 1);
-write_num!(set_uint8, u8, 1);
-write_num!(set_int16, i16, 2);
-write_num!(set_uint16, u16, 2);
-write_num!(set_int32, i32, 4);
-write_num!(set_uint32, u32, 4);
-
-#[napi]
-pub fn set_int64(pointer: BigInt, offset: i64, value: BigInt) -> Result<()> {
-  let raw = bigint_to_i64(&value, "Value must be an int64")?;
-  let address = checked_addr(pointer, Some(offset), 8)?;
-  unsafe { ptr::write_unaligned(address as *mut i64, raw) };
-  Ok(())
-}
-
-#[napi]
-pub fn set_uint64(pointer: BigInt, offset: i64, value: BigInt) -> Result<()> {
-  let raw = bigint_to_u64(&value, "Value must be a uint64")?;
-  let address = checked_addr(pointer, Some(offset), 8)?;
-  unsafe { ptr::write_unaligned(address as *mut u64, raw) };
-  Ok(())
-}
-
-#[napi]
-pub fn set_float32(pointer: BigInt, offset: i64, value: f64) -> Result<()> {
-  let address = checked_addr(pointer, Some(offset), 4)?;
-  unsafe { ptr::write_unaligned(address as *mut f32, value as f32) };
-  Ok(())
-}
-
-write_num!(set_float64, f64, 8);
+write_num!(set_int8, 1, i8);
+write_num!(set_uint8, 1, u8);
+write_num!(set_int16, 2, i16);
+write_num!(set_uint16, 2, u16);
+write_num!(set_int32, 4, i32);
+write_num!(set_uint32, 4, u32);
+write_num!(set_int64, 8, value: BigInt, i64, bigint_to_i64(&value, "Value must be an int64")?);
+write_num!(set_uint64, 8, value: BigInt, u64, bigint_to_u64(&value, "Value must be a uint64")?);
+write_num!(set_float32, 4, value: f64, f32, value as f32);
+write_num!(set_float64, 8, f64);
 
 #[napi]
 pub fn to_string(pointer: BigInt) -> Result<Option<String>> {
@@ -135,9 +122,9 @@ pub fn to_string(pointer: BigInt) -> Result<Option<String>> {
     return Ok(None);
   }
   let value = unsafe { CStr::from_ptr(raw as usize as *const c_char) }
-    .to_str()
-    .map_err(|error| Error::new(Status::GenericFailure, error.to_string()))?
-    .to_owned();
+      .to_str()
+      .map_err(|error| Error::new(Status::GenericFailure, error.to_string()))?
+      .to_owned();
   Ok(Some(value))
 }
 
@@ -158,20 +145,22 @@ pub fn to_buffer(env: &Env, pointer: BigInt, len: u32, copy: Option<bool>) -> Re
   }
   let len = len as usize;
   (raw as usize)
-    .checked_add(len.saturating_sub(1))
-    .ok_or_else(|| {
-      Error::new(
-        Status::InvalidArg,
-        "The pointer and length exceed the platform address range".to_owned(),
-      )
-    })?;
+      .checked_add(len.saturating_sub(1))
+      .ok_or_else(|| {
+        Error::new(
+          Status::InvalidArg,
+          "The pointer and length exceed the platform address range".to_owned(),
+        )
+      })?;
   let slice = if len == 0 {
     &[]
   } else {
     unsafe { std::slice::from_raw_parts(raw as usize as *const u8, len) }
   };
   if copy == Some(false) {
-    unsafe { BufferSlice::from_external(env, raw as usize as *mut u8, len, (), |_, _| {})?.into_buffer(env) }
+    unsafe {
+      BufferSlice::from_external(env, raw as usize as *mut u8, len, (), |_, _| {})?.into_buffer(env)
+    }
   } else {
     BufferSlice::copy_from(env, slice)?.into_buffer(env)
   }
@@ -199,13 +188,13 @@ pub fn to_array_buffer<'env>(
   }
   let len = len as usize;
   (raw as usize)
-    .checked_add(len.saturating_sub(1))
-    .ok_or_else(|| {
-      Error::new(
-        Status::InvalidArg,
-        "The pointer and length exceed the platform address range".to_owned(),
-      )
-    })?;
+      .checked_add(len.saturating_sub(1))
+      .ok_or_else(|| {
+        Error::new(
+          Status::InvalidArg,
+          "The pointer and length exceed the platform address range".to_owned(),
+        )
+      })?;
   let slice = if len == 0 {
     &[]
   } else {
@@ -231,10 +220,10 @@ pub fn get_raw_pointer(value: Unknown<'_>) -> Result<BigInt> {
       if let Ok(typed) = unsafe { value.cast::<TypedArray>() } {
         return Ok(BigInt::from(
           typed
-            .arraybuffer
-            .as_ref()
-            .as_ptr()
-            .wrapping_add(typed.byte_offset) as u64,
+              .arraybuffer
+              .as_ref()
+              .as_ptr()
+              .wrapping_add(typed.byte_offset) as u64,
         ));
       }
       Err(Error::new(
