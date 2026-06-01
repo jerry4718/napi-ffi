@@ -1,8 +1,4 @@
-node-ffi-rs
-code-from-node
-napi-rs-examples
-native.d.ts
-native.js
+.bak
 
 ### Created by https://www.gitignore.io
 ### Rust ###
@@ -156,6 +152,8 @@ dist
 
 *.node
 *.wasm
+native.d.ts
+native.js
 
 ### Node Patch ###
 # Serverless Webpack directories
