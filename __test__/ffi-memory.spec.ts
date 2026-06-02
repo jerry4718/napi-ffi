@@ -4,7 +4,6 @@ const require = createRequire(import.meta.url)
 // Flags: 
 
 const common = require('./common');
-common.skipIfFFIMissing();
 const { constants: bufferConstants } = require('node:buffer');
 const assert = require('node:assert');
 const ffi = require('../index.js');

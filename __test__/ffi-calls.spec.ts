@@ -3,7 +3,6 @@ import { createRequire } from 'node:module'
 const require = createRequire(import.meta.url)
 // Flags:  --expose-gc
 const common = require('./common');
-common.skipIfFFIMissing();
 const { gcUntil } = require('./common/gc');
 const assert = require('node:assert');
 const { spawnSync } = require('node:child_process');
@@ -11,24 +10,11 @@ const { spawnSync } = require('node:child_process');
 const ffi = require('../index.js');
 const { cString, fixtureSymbols, libraryPath, nativeSize } = require('./ffi-test-common');
 
-function loggedTest(title, fn) {
-  test(title, (t) => {
-    console.error(`[ffi-calls] start: ${title}`);
-    try {
-      return fn(t);
-    } catch (error) {
-      console.error(`[ffi-calls] end: ${title}\n ============\n ${error.message || error} \n ============ `)
-    } finally {
-      console.error(`[ffi-calls] end: ${title}`);
-    }
-  });
-}
-
 function getLibrary() {
   return ffi.dlopen(libraryPath, fixtureSymbols);
 }
 
-loggedTest('ffi calls support integer arithmetic and char semantics', () => {
+test('ffi calls support integer arithmetic and char semantics', () => {
   const { lib, functions: symbols } = getLibrary();
   try {
     assert.strictEqual(symbols.add_i8(120, 10), -126);
@@ -52,7 +38,7 @@ loggedTest('ffi calls support integer arithmetic and char semantics', () => {
   }
 });
 
-loggedTest('ffi calls support floating point and mixed signatures', () => {
+test('ffi calls support floating point and mixed signatures', () => {
   const { lib, functions: symbols } = getLibrary();
   try {
     assert.strictEqual(symbols.add_f32(1.25, 2.75), 4);
@@ -65,7 +51,7 @@ loggedTest('ffi calls support floating point and mixed signatures', () => {
   }
 });
 
-loggedTest('ffi bool signatures use uint8 values', () => {
+test('ffi bool signatures use uint8 values', () => {
   const { lib, functions: symbols } = getLibrary();
   try {
     assert.strictEqual(symbols.logical_and(1, 1), 1);
@@ -74,8 +60,8 @@ loggedTest('ffi bool signatures use uint8 values', () => {
     assert.strictEqual(symbols.logical_not(0), 1);
 
     const boolAdder = lib.getFunction('add_u8', {
-      parameters: ['bool', 'bool'],
-      result: 'bool',
+      arguments: ['bool', 'bool'],
+      return: 'bool',
     });
     assert.strictEqual(boolAdder(1, 0), 1);
     assert.throws(() => boolAdder(true, false), /Argument 0 must be a uint8/);
@@ -84,7 +70,7 @@ loggedTest('ffi bool signatures use uint8 values', () => {
   }
 });
 
-loggedTest('ffi pointer identity conversions work', () => {
+test('ffi pointer identity conversions work', () => {
   const { lib, functions: symbols } = getLibrary();
   try {
     const address = 0x1234n;
@@ -96,7 +82,7 @@ loggedTest('ffi pointer identity conversions work', () => {
   }
 });
 
-loggedTest('ffi strings and buffers cross the boundary correctly', () => {
+test('ffi strings and buffers cross the boundary correctly', () => {
   const { lib, functions: symbols } = getLibrary();
   try {
     assert.strictEqual(symbols.string_length('hello ffi'), 9n);
@@ -127,7 +113,7 @@ loggedTest('ffi strings and buffers cross the boundary correctly', () => {
   }
 });
 
-loggedTest('ffi typed array accessors work', () => {
+test('ffi typed array accessors work', () => {
   const { lib, functions: symbols } = getLibrary();
   try {
     const ints = new Int32Array([10, 20, 30, 40]);
@@ -144,7 +130,7 @@ loggedTest('ffi typed array accessors work', () => {
   }
 });
 
-loggedTest('ffi global state helpers work', () => {
+test('ffi global state helpers work', () => {
   const { lib, functions: symbols } = getLibrary();
   try {
     symbols.reset_counter();
@@ -159,19 +145,19 @@ loggedTest('ffi global state helpers work', () => {
   }
 });
 
-loggedTest('ffi callbacks can be registered and invoked', () => {
+test('ffi callbacks can be registered and invoked', () => {
   const { lib, functions: symbols } = getLibrary();
   const seen = [];
   const intCallback = lib.registerCallback(
-    { parameters: ['i32'], result: 'i32' },
+    { arguments: ['i32'], return: 'i32' },
     (value) => value * 2,
   );
   const stringCallback = lib.registerCallback(
-    { parameters: ['pointer'], result: 'void' },
+    { arguments: ['pointer'], return: 'void' },
     (ptr) => seen.push(ffi.toString(ptr)),
   );
   const binaryCallback = lib.registerCallback(
-    { arguments: ['i32', 'i32'], returns: 'i32' },
+    { arguments: ['i32', 'i32'], return: 'i32' },
     (a, b) => a + b,
   );
 
@@ -182,12 +168,12 @@ loggedTest('ffi callbacks can be registered and invoked', () => {
       assert.strictEqual(symbols.call_binary_int_callback(binaryCallback, 19, 23), 42);
 
       assert.throws(
-        () => lib.registerCallback({ result: 'string' }, () => 'hello callback'),
+        () => lib.registerCallback({ return: 'string' }, () => 'hello callback'),
         /Callback result type cannot be string; use pointer and manage the returned memory explicitly/,
       );
 
-      const nullPointerCallback = lib.registerCallback({ result: 'pointer' }, () => null);
-      const undefinedPointerCallback = lib.registerCallback({ result: 'pointer' }, () => undefined);
+      const nullPointerCallback = lib.registerCallback({ return: 'pointer' }, () => null);
+      const undefinedPointerCallback = lib.registerCallback({ return: 'pointer' }, () => undefined);
     try {
       assert.strictEqual(symbols.call_pointer_callback_is_null(nullPointerCallback), 1);
       assert.strictEqual(symbols.call_pointer_callback_is_null(undefinedPointerCallback), 1);
@@ -203,7 +189,7 @@ loggedTest('ffi callbacks can be registered and invoked', () => {
   }
 });
 
-loggedTest('ffi callback ref and unref APIs work', () => {
+test('ffi callback ref and unref APIs work', () => {
   const { lib, functions: symbols } = getLibrary();
   let called = false;
   const values = [];
@@ -211,7 +197,7 @@ loggedTest('ffi callback ref and unref APIs work', () => {
     called = true;
   });
   const countingCallback = lib.registerCallback(
-    { parameters: ['i32'], result: 'i32' },
+    { arguments: ['i32'], return: 'i32' },
     (value) => {
       values.push(value);
       return 0;
@@ -237,54 +223,31 @@ loggedTest('ffi callback ref and unref APIs work', () => {
   }
 });
 
-loggedTest('ffi validates invalid arguments', () => {
+test('ffi validates invalid arguments', () => {
   const { lib, functions: symbols } = getLibrary();
-  let row = 0;
   try {
     assert.throws(() => symbols.add_i32(1), /Invalid argument count: expected 2, got 1/);
-    console.error(`ffi validates invalid arguments ${ row ++ }`);
     assert.throws(() => symbols.add_i32('1', 2), /Argument 0 must be an int32/);
-    console.error(`ffi validates invalid arguments ${ row ++ }`);
     assert.throws(() => symbols.add_i8(1.5, 1), /Argument 0 must be an int8/);
-    console.error(`ffi validates invalid arguments ${ row ++ }`);
     assert.throws(() => symbols.add_i8(200, 1), /Argument 0 must be an int8/);
-    console.error(`ffi validates invalid arguments ${ row ++ }`);
     assert.throws(() => symbols.add_u8(Number.NaN, 1), /Argument 0 must be a uint8/);
-    console.error(`ffi validates invalid arguments ${ row ++ }`);
     assert.throws(() => symbols.add_u8(300, 1), /Argument 0 must be a uint8/);
-    console.error(`ffi validates invalid arguments ${ row ++ }`);
     assert.throws(() => symbols.add_i16(1.5, 1), /Argument 0 must be an int16/);
-    console.error(`ffi validates invalid arguments ${ row ++ }`);
     assert.throws(() => symbols.add_i16(40_000, 1), /Argument 0 must be an int16/);
-    console.error(`ffi validates invalid arguments ${ row ++ }`);
     assert.throws(() => symbols.add_u16(Number.NaN, 1), /Argument 0 must be a uint16/);
-    console.error(`ffi validates invalid arguments ${ row ++ }`);
     assert.throws(() => symbols.add_u16(70_000, 1), /Argument 0 must be a uint16/);
-    console.error(`ffi validates invalid arguments ${ row ++ }`);
     assert.throws(() => symbols.add_i64(1, 2n), /Argument 0 must be an int64/);
-    console.error(`ffi validates invalid arguments ${ row ++ }`);
     assert.throws(() => symbols.add_i64(1.5, 2n), /Argument 0 must be an int64/);
-    console.error(`ffi validates invalid arguments ${ row ++ }`);
     assert.throws(() => symbols.add_i64(2n ** 63n, 2n), /Argument 0 must be an int64/);
-    console.error(`ffi validates invalid arguments ${ row ++ }`);
     assert.throws(() => symbols.add_i64(-(2n ** 63n) - 1n, 2n), /Argument 0 must be an int64/);
-    console.error(`ffi validates invalid arguments ${ row ++ }`);
     assert.throws(() => symbols.add_u64('1', 2n), /Argument 0 must be a uint64/);
-    console.error(`ffi validates invalid arguments ${ row ++ }`);
     assert.throws(() => symbols.add_u64(1, 2n), /Argument 0 must be a uint64/);
-    console.error(`ffi validates invalid arguments ${ row ++ }`);
     assert.throws(() => symbols.add_u64(Number.NaN, 2n), /Argument 0 must be a uint64/);
-    console.error(`ffi validates invalid arguments ${ row ++ }`);
     assert.throws(() => symbols.add_u64(-1n, 2n), /Argument 0 must be a uint64/);
-    console.error(`ffi validates invalid arguments 17`);
     assert.throws(() => symbols.add_u64(2n ** 64n, 2n), /Argument 0 must be a uint64/);
-    console.error(`ffi validates invalid arguments 18`);
     assert.throws(() => symbols.identity_pointer(-1n), /Argument 0 must be a non-negative pointer bigint/);
-    console.error(`ffi validates invalid arguments 19`);
     assert.throws(() => symbols.string_length('hello\0ffi'), /Argument 0 must not contain null bytes/);
-    console.error(`ffi validates invalid arguments 20`);
     assert.throws(() => symbols.string_length(Symbol('x')), /must be a buffer, an ArrayBuffer, a string, or a bigint/);
-    console.error(`ffi validates invalid arguments 21`);
 
     if (process.arch === 'ia32' || process.arch === 'arm') {
       assert.throws(() => symbols.identity_pointer(2n ** 32n), /platform pointer range|non-negative pointer bigint/);
@@ -294,7 +257,7 @@ loggedTest('ffi validates invalid arguments', () => {
   }
 });
 
-loggedTest('ffi division helpers behave as expected', () => {
+test('ffi division helpers behave as expected', () => {
   const { lib, functions: symbols } = getLibrary();
   try {
     assert.strictEqual(symbols.divide_i32(84, 2), 42);
@@ -312,7 +275,7 @@ function assertInvalidCallbackReturnAborts(returnExpression) {
 const { fixtureSymbols, libraryPath } = require(${JSON.stringify(require.resolve('./ffi-test-common'))});
 const { lib, functions } = ffi.dlopen(libraryPath, fixtureSymbols);
 const callback = lib.registerCallback(
-  { parameters: ['i32'], result: 'i32' },
+  { arguments: ['i32'], return: 'i32' },
   () => (${returnExpression}),
 );
 functions.call_int_callback(callback, 21);`,
@@ -333,7 +296,7 @@ function assertInvalidCallbackBehaviorAborts(callbackBody, message) {
 const { fixtureSymbols, libraryPath } = require(${JSON.stringify(require.resolve('./ffi-test-common'))});
 const { lib, functions } = ffi.dlopen(libraryPath, fixtureSymbols);
 const callback = lib.registerCallback(
-  { parameters: ['i32'], result: 'i32' },
+  { arguments: ['i32'], return: 'i32' },
   () => { ${callbackBody} },
 );
 functions.call_int_callback(callback, 21);`,
@@ -362,7 +325,7 @@ const ffi = require(${JSON.stringify(require.resolve('../index.js'))});
 const { fixtureSymbols, libraryPath } = require(${JSON.stringify(require.resolve('./ffi-test-common'))});
 const { lib } = ffi.dlopen(libraryPath, fixtureSymbols);
 const callback = lib.registerCallback(
-  { parameters: ['i32'], result: 'i32' },
+  { arguments: ['i32'], return: 'i32' },
   (value) => value * 2,
 );
 new Worker(${JSON.stringify(workerSource)}, { eval: true, workerData: callback });`,
@@ -376,17 +339,17 @@ stderr: ${stderr}`);
   assert.match(stderr, /Callbacks can only be invoked on the system thread they were created on/);
 }
 
-loggedTest('ffi aborts on invalid callback return values', () => {
+test('ffi aborts on invalid callback return values', () => {
   assertInvalidCallbackReturnAborts('1.5');
   assertInvalidCallbackReturnAborts('2 ** 40');
 });
 
-loggedTest('ffi aborts on invalid callback behavior', () => {
+test('ffi aborts on invalid callback behavior', () => {
   assertInvalidCallbackBehaviorAborts('throw new Error("boom");', /Callbacks cannot throw an exception/);
   assertInvalidCallbackBehaviorAborts('return Promise.resolve(1);', /Callbacks cannot return promises/);
 });
 
-loggedTest('ffi aborts on cross-thread callback invocation', () => {
+test('ffi aborts on cross-thread callback invocation', () => {
   assertCrossThreadCallbackAbort();
 });
 
@@ -396,7 +359,7 @@ test('ffi unrefCallback releases callback function', async () => {
     let callback = () => 1;
     const ref = new WeakRef(callback);
     const pointer = lib.registerCallback(
-      { parameters: ['i32'], result: 'i32' },
+      { arguments: ['i32'], return: 'i32' },
       callback,
     );
 
@@ -420,7 +383,7 @@ test('ffi unrefCallback zero-fills narrow callback return', async () => {
     let callback = () => 1;
     const ref = new WeakRef(callback);
     const pointer = lib.registerCallback(
-      { parameters: ['i8'], result: 'i8' },
+      { arguments: ['i8'], return: 'i8' },
       callback,
     );
 
@@ -443,7 +406,7 @@ test('ffi refCallback retains callback function', async () => {
   try {
     let callback = () => 1;
     const ref = new WeakRef(callback);
-    const pointer = lib.registerCallback({ result: 'i32' }, callback);
+    const pointer = lib.registerCallback({ return: 'i32' }, callback);
 
     lib.unrefCallback(pointer);
     lib.refCallback(pointer);

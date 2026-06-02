@@ -32,9 +32,10 @@ export type FFIType =
   | 'arraybuffer'
   | 'function'
 
-export type FFISignature =
-  & ({ return: FFIType } | { returns: FFIType } | { result: FFIType } | {})
-  & ({ arguments: readonly FFIType[] } | { parameters: readonly FFIType[] } | {})
+export type FFISignature ={
+  return: FFIType
+  arguments: readonly FFIType[]
+}
 
 export type Definitions = Record<string, FFISignature>
 
@@ -90,16 +91,8 @@ type FFICallbackReturnValue<T extends FFIType | undefined> =
         ? never
         : FFIReturnValue<T>
 
-type SignatureReturn<S extends FFISignature> =
-  S extends { result: infer T extends FFIType } ? T
-  : S extends { returns: infer T extends FFIType } ? T
-  : S extends { return: infer T extends FFIType } ? T
-  : undefined
-
-type SignatureArguments<S extends FFISignature> =
-  S extends { parameters: infer T extends readonly FFIType[] } ? T
-  : S extends { arguments: infer T extends readonly FFIType[] } ? T
-  : readonly []
+type SignatureReturn<S extends FFISignature> = S extends { result: infer T extends FFIType } ? T : undefined
+type SignatureArguments<S extends FFISignature> = S extends { parameters: infer T extends readonly FFIType[] } ? T : readonly []
 
 type MapFFIArgs<T extends readonly FFIType[]> = number extends T['length']
   ? Array<number | bigint | string | Buffer | ArrayBuffer | ArrayBufferView | null | undefined>

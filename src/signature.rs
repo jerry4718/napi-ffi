@@ -62,13 +62,10 @@ fn parse_target(type_name: &str) -> Result<Box<dyn TypedTarget>> {
 pub fn compile_signature(definition: Object) -> Result<CompiledSignature> {
   let ret = definition
     .get::<String>("return")?
-    .or(definition.get::<String>("returns")?)
-    .or(definition.get::<String>("result")?)
     .unwrap_or_else(|| "void".to_owned());
 
   let args = definition
     .get::<Vec<String>>("arguments")?
-    .or(definition.get::<Vec<String>>("parameters")?)
     .unwrap_or_default();
 
   let compiled_args = args

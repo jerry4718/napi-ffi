@@ -2,13 +2,11 @@ import test from 'ava'
 import { createRequire } from 'node:module'
 const require = createRequire(import.meta.url)
 // Flags: 
-const { skipIfFFIMissing, isWindows } = require('./common');
+const { isWindows } = require('./common');
 const assert = require('node:assert');
 const { spawnSync } = require('node:child_process');
 
 const { fixtureSymbols, libraryPath } = require('./ffi-test-common');
-
-skipIfFFIMissing();
 
 test('writing to readonly memory via buffer fails', (t) => {
   if (isWindows) {

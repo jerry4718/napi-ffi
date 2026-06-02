@@ -3,12 +3,9 @@ import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 const require = createRequire(import.meta.url)
 // Flags: 
-const common = require('./common');
 const assert = require('node:assert');
 const { spawnSync } = require('node:child_process');
 
-
-common.skipIfFFIMissing();
 
 test('ffi cannot be loaded without node: prefix', () => {
   assert.throws(() => {
