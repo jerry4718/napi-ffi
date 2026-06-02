@@ -31,13 +31,37 @@ function getPlatformConfig(platform) {
   }
 }
 
+function getZigTarget(platform, arch) {
+  switch (`${platform}:${arch}`) {
+    case 'darwin:x64':
+      return 'x86_64-macos'
+    case 'darwin:arm64':
+      return 'aarch64-macos'
+    case 'linux:x64':
+      return 'x86_64-linux-gnu'
+    case 'linux:arm64':
+      return 'aarch64-linux-gnu'
+    case 'win32:x64':
+      return 'x86_64-windows-gnu'
+    case 'win32:ia32':
+      return 'x86-windows-gnu'
+    case 'win32:arm64':
+      return 'aarch64-windows-gnu'
+    default:
+      return null
+  }
+}
+
 const { extension, compilerArgs } = getPlatformConfig(process.platform)
 const outputFileName = `${libraryBaseName}${extension}`
 const outputPath = path.join(fixtureBuildDir, outputFileName)
 
 fs.mkdirSync(fixtureBuildDir, { recursive: true })
 
-const result = spawnSync(zig, ['cc', ...compilerArgs, sourceFile, '-o', outputPath], {
+const zigTarget = getZigTarget(process.platform, process.arch)
+const targetArgs = zigTarget ? ['-target', zigTarget] : []
+
+const result = spawnSync(zig, ['cc', ...targetArgs, ...compilerArgs, sourceFile, '-o', outputPath], {
   cwd: repoRoot,
   stdio: 'inherit',
 })

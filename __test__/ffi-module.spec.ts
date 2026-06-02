@@ -1,5 +1,6 @@
 import test from 'ava'
 import { createRequire } from 'node:module'
+import { pathToFileURL } from 'node:url'
 const require = createRequire(import.meta.url)
 // Flags: 
 const common = require('./common');
@@ -47,10 +48,11 @@ test('ffi userland package does not register a node:ffi builtin', () => {
 });
 
 test('ffi userland entry can be imported from ESM', () => {
+  const entryUrl = pathToFileURL(require.resolve('../index.js')).href;
   const { stdout, stderr, status, signal } = spawnSync(process.execPath, [
     '--input-type=module',
     '-e',
-    `import * as ffi from ${JSON.stringify(require.resolve('../index.js'))}; console.log(typeof ffi.dlopen);`,
+    `import * as ffi from ${JSON.stringify(entryUrl)}; console.log(typeof ffi.dlopen);`,
   ], {
     encoding: 'utf8',
   });
