@@ -276,15 +276,15 @@ loggedTest('ffi validates invalid arguments', () => {
     assert.throws(() => symbols.add_u64(Number.NaN, 2n), /Argument 0 must be a uint64/);
     console.error(`ffi validates invalid arguments ${ row ++ }`);
     assert.throws(() => symbols.add_u64(-1n, 2n), /Argument 0 must be a uint64/);
-    console.error(`ffi validates invalid arguments ${ row ++ }`);
+    console.error(`ffi validates invalid arguments 17`);
     assert.throws(() => symbols.add_u64(2n ** 64n, 2n), /Argument 0 must be a uint64/);
-    console.error(`ffi validates invalid arguments ${ row ++ }`);
+    console.error(`ffi validates invalid arguments 18`);
     assert.throws(() => symbols.identity_pointer(-1n), /Argument 0 must be a non-negative pointer bigint/);
-    console.error(`ffi validates invalid arguments ${ row ++ }`);
+    console.error(`ffi validates invalid arguments 19`);
     assert.throws(() => symbols.string_length('hello\0ffi'), /Argument 0 must not contain null bytes/);
-    console.error(`ffi validates invalid arguments ${ row ++ }`);
+    console.error(`ffi validates invalid arguments 20`);
     assert.throws(() => symbols.string_length(Symbol('x')), /must be a buffer, an ArrayBuffer, a string, or a bigint/);
-    console.error(`ffi validates invalid arguments ${ row ++ }`);
+    console.error(`ffi validates invalid arguments 21`);
 
     if (process.arch === 'ia32' || process.arch === 'arm') {
       assert.throws(() => symbols.identity_pointer(2n ** 32n), /platform pointer range|non-negative pointer bigint/);

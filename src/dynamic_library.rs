@@ -19,6 +19,7 @@ use crate::signature::{compile_signature, CompiledSignature};
 struct RawStorage {
   pointer: NonNull<u8>,
   layout: Layout,
+  initialized: bool,
 }
 
 impl RawStorage {
@@ -30,11 +31,23 @@ impl RawStorage {
       NonNull::new(raw)
         .ok_or_else(|| Error::new(Status::GenericFailure, "Allocation failed".to_owned()))?
     };
-    Ok(Self { pointer, layout })
+    Ok(Self {
+      pointer,
+      layout,
+      initialized: false,
+    })
   }
 
   fn as_mut_ptr(&self) -> *mut u8 {
     self.pointer.as_ptr()
+  }
+
+  fn mark_initialized(&mut self) {
+    self.initialized = true;
+  }
+
+  fn is_initialized(&self) -> bool {
+    self.initialized
   }
 }
 
@@ -70,11 +83,17 @@ impl<'a> PreparedFunctionArg<'a> {
         .function_arg_as_ffi_arg(self.storage.as_mut_ptr())
     }
   }
+
+  fn mark_initialized(&mut self) {
+    self.storage.mark_initialized();
+  }
 }
 
 impl Drop for PreparedFunctionArg<'_> {
   fn drop(&mut self) {
-    unsafe { self.target.drop_function_arg(self.storage.as_mut_ptr()) };
+    if self.storage.is_initialized() {
+      unsafe { self.target.drop_function_arg(self.storage.as_mut_ptr()) };
+    }
   }
 }
 
@@ -104,11 +123,17 @@ impl<'a> PreparedCallbackReturn<'a> {
       unsafe { std::ptr::copy_nonoverlapping(src, dst, copy_size) };
     }
   }
+
+  fn mark_initialized(&mut self) {
+    self.storage.mark_initialized();
+  }
 }
 
 impl Drop for PreparedCallbackReturn<'_> {
   fn drop(&mut self) {
-    unsafe { self.target.drop_callback_return(self.storage.as_mut_ptr()) };
+    if self.storage.is_initialized() {
+      unsafe { self.target.drop_callback_return(self.storage.as_mut_ptr()) };
+    }
   }
 }
 
@@ -262,12 +287,13 @@ impl CallbackContext {
     {
       abort_callback("Callbacks cannot return promises")
     }
-    let prepared = PreparedCallbackReturn::new(self.signature.ret.as_ref())?;
+    let mut prepared = PreparedCallbackReturn::new(self.signature.ret.as_ref())?;
     unsafe {
       self
         .signature
         .ret
         .formalize_callback_return(&env, returned, prepared.as_mut_ptr())?;
+      prepared.mark_initialized();
       prepared.copy_into_result(result);
     }
     Ok(())
@@ -594,8 +620,9 @@ impl DynamicLibrary {
       .zip(values)
       .enumerate()
       .map(|(index, (target, value))| {
-        let prepared = PreparedFunctionArg::new(target.as_ref())?;
+        let mut prepared = PreparedFunctionArg::new(target.as_ref())?;
         unsafe { target.formalize_function_arg(env, value, index, prepared.as_ptr())? };
+        prepared.mark_initialized();
         Ok(prepared)
       })
       .collect::<Result<Vec<_>>>()?;
