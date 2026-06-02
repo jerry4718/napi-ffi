@@ -319,7 +319,7 @@ fn pointer_from_bigint(pointer: &BigInt) -> Result<usize> {
   usize::try_from(raw).map_err(|_| {
     Error::new(
       Status::InvalidArg,
-      "The pointer exceeds the platform address range".to_owned(),
+      "The pointer exceeds the platform pointer range".to_owned(),
     )
   })
 }

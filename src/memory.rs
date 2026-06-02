@@ -40,7 +40,7 @@ fn checked_addr(pointer: BigInt, offset: Option<i64>, access_size: usize) -> Res
   let base = usize::try_from(raw).map_err(|_| {
     Error::new(
       Status::InvalidArg,
-      "The pointer exceeds the platform address range".to_owned(),
+      "The pointer exceeds the platform pointer range".to_owned(),
     )
   })?;
   let offset = usize::try_from(offset).map_err(|_| {
@@ -144,7 +144,7 @@ pub fn to_buffer(env: &Env, pointer: BigInt, len: u32, copy: Option<bool>) -> Re
   if usize::BITS < 64 && raw > usize::MAX as u64 {
     return Err(Error::new(
       Status::InvalidArg,
-      "The pointer exceeds the platform address range".to_owned(),
+      "The pointer exceeds the platform pointer range".to_owned(),
     ));
   }
   if raw == 0 && len > 0 {
@@ -187,7 +187,7 @@ pub fn to_array_buffer<'env>(
   if usize::BITS < 64 && raw > usize::MAX as u64 {
     return Err(Error::new(
       Status::InvalidArg,
-      "The pointer exceeds the platform address range".to_owned(),
+      "The pointer exceeds the platform pointer range".to_owned(),
     ));
   }
   if raw == 0 && len > 0 {
