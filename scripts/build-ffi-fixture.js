@@ -31,37 +31,130 @@ function getPlatformConfig(platform) {
   }
 }
 
-function getZigTarget(platform, arch) {
-  switch (`${platform}:${arch}`) {
-    case 'darwin:x64':
-      return 'x86_64-macos'
-    case 'darwin:arm64':
-      return 'aarch64-macos'
-    case 'linux:x64':
-      return 'x86_64-linux-gnu'
-    case 'linux:arm64':
-      return 'aarch64-linux-gnu'
-    case 'win32:x64':
-      return 'x86_64-windows-gnu'
-    case 'win32:ia32':
-      return 'x86-windows-gnu'
-    case 'win32:arm64':
-      return 'aarch64-windows-gnu'
+function normalizeArch(arch) {
+  switch (arch) {
+    case 'x64':
+      return 'x86_64'
+    case 'arm64':
+      return 'aarch64'
+    case 'i686':
+    case 'i386':
+    case 'ia32':
+      return 'x86'
+    case 'armv7':
+    case 'armv7a':
+      return 'arm'
+    default:
+      return arch
+  }
+}
+
+function normalizeLinuxAbi(abi) {
+  if (!abi) {
+    return 'gnu'
+  }
+  if (abi === 'musl') {
+    return 'musl'
+  }
+  if (abi.startsWith('gnu')) {
+    return abi
+  }
+  return abi
+}
+
+function detectHostAbi() {
+  if (process.platform === 'win32') {
+    return 'msvc'
+  }
+
+  if (process.platform === 'darwin') {
+    return undefined
+  }
+
+  const report = typeof process.report?.getReport === 'function' ? process.report.getReport() : null
+  if (report?.header?.glibcVersionRuntime) {
+    return 'gnu'
+  }
+  if (report?.sharedObjects?.some((file) => file.includes('libc.musl-') || file.includes('ld-musl-'))) {
+    return 'musl'
+  }
+  return 'gnu'
+}
+
+function parseFixtureTarget(target) {
+  const parts = target.split('-')
+  const arch = normalizeArch(parts[0])
+
+  if (parts.includes('darwin')) return { platform: 'darwin', arch }
+  if (parts.includes('windows')) return { platform: 'win32', arch, abi: parts[parts.length - 1] }
+
+  if (parts.includes('linux')) {
+    return { platform: 'linux', arch, abi: normalizeLinuxAbi(parts[parts.length - 1]) }
+  }
+
+  throw new Error(`Unsupported FFI_FIXTURE_TARGET: ${target}`)
+}
+
+function getRequestedTarget() {
+  if (process.env.FFI_FIXTURE_TARGET) {
+    return parseFixtureTarget(process.env.FFI_FIXTURE_TARGET)
+  }
+
+  return {
+    platform: process.platform,
+    arch: normalizeArch(process.arch),
+    abi: detectHostAbi(),
+  }
+}
+
+function toZigOs(platform) {
+  switch (platform) {
+    case 'darwin':
+      return 'macos'
+    case 'linux':
+      return 'linux'
+    case 'win32':
+      return 'windows'
     default:
       return null
   }
 }
 
-const { extension, compilerArgs } = getPlatformConfig(process.platform)
+function resolveZigTarget(target) {
+  const zigOs = toZigOs(target.platform)
+
+  if (!target.arch || !zigOs) {
+    return null
+  }
+
+  if (target.platform === 'win32') {
+    return `${target.arch}-${zigOs}-${target.abi || 'msvc'}`
+  }
+
+  if (target.platform !== 'linux') {
+    return `${target.arch}-${zigOs}`
+  }
+
+  const zigAbi = target.arch === 'arm'
+    ? target.abi === 'musl' ? 'musleabihf' : 'gnueabihf'
+    : target.abi === 'musl' ? 'musl' : 'gnu'
+
+  return `${target.arch}-${zigOs}-${zigAbi}`
+}
+
+const requestedTarget = getRequestedTarget()
+const { extension, compilerArgs } = getPlatformConfig(requestedTarget.platform)
 const outputFileName = `${libraryBaseName}${extension}`
 const outputPath = path.join(fixtureBuildDir, outputFileName)
 
 fs.mkdirSync(fixtureBuildDir, { recursive: true })
 
-const zigTarget = getZigTarget(process.platform, process.arch)
+const zigTarget = resolveZigTarget(requestedTarget)
 const targetArgs = zigTarget ? ['-target', zigTarget] : []
 
-const result = spawnSync(zig, ['cc', ...targetArgs, ...compilerArgs, sourceFile, '-o', outputPath], {
+const args = ['cc', ...targetArgs, ...compilerArgs, sourceFile, '-o', outputPath];
+console.log(`${args} ${ args.join(" ") }`)
+const result = spawnSync(zig, args, {
   cwd: repoRoot,
   stdio: 'inherit',
 })

@@ -61,7 +61,8 @@
     "lint": "oxlint",
     "prepublishOnly": "napi prepublish -t npm",
     "build:ffi-fixture": "node scripts/build-ffi-fixture.js",
-    "test": "npm run build:ffi-fixture && ava",
+    "test": "ava",
+    "test:not-ci": "pnpm build:ffi-fixture && ava",
     "version": "napi version"
   },
   "devDependencies": {

@@ -245,6 +245,10 @@ jobs:
       - name: List packages
         run: ls -R .
         shell: bash
+      - name: Build FFI test fixture
+        run: pnpm run build:ffi-fixture
+        env:
+          FFI_FIXTURE_TARGET: ${{ matrix.settings.target }}
       - name: Test bindings
         run: pnpm test
   test-linux-binding:
@@ -306,6 +310,10 @@ jobs:
       - name: List packages
         run: ls -R .
         shell: bash
+      - name: Build FFI test fixture
+        run: pnpm run build:ffi-fixture
+        env:
+          FFI_FIXTURE_TARGET: ${{ matrix.target }}
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
         if: ${{ contains(matrix.target, 'armv7') }}
