@@ -16,6 +16,8 @@ function loggedTest(title, fn) {
     console.error(`[ffi-calls] start: ${title}`);
     try {
       return await fn(t);
+    } catch (error) {
+      console.error(`[ffi-calls] end: ${title}\n ============\n ${error.message || error} \n ============ `)
     } finally {
       console.error(`[ffi-calls] end: ${title}`);
     }

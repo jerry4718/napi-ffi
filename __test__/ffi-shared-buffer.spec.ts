@@ -418,13 +418,21 @@ test('SB metadata is Symbol-keyed, attribute-hardened, and not leaked onto the w
   }
 });
 
-test('pointer fast-path range check: [0, 2^64 - 1]', () => {
+test('pointer fast-path range check respects platform pointer width', () => {
   const { lib, functions } = ffi.dlopen(libraryPath, {
     identity_pointer: { result: 'pointer', parameters: ['pointer'] },
   });
   try {
+    const maxPointer = process.arch === 'ia32' || process.arch === 'arm'
+      ? (1n << 32n) - 1n
+      : (1n << 64n) - 1n;
+
     assert.strictEqual(functions.identity_pointer(0n), 0n);
-    assert.strictEqual(functions.identity_pointer((1n << 64n) - 1n), (1n << 64n) - 1n);
+    assert.strictEqual(functions.identity_pointer(maxPointer), maxPointer);
+
+    if (process.arch === 'ia32' || process.arch === 'arm') {
+      assert.throws(() => functions.identity_pointer(1n << 32n), /platform pointer range/);
+    }
 
     const expect = { code: 'ERR_INVALID_ARG_VALUE' };
     assert.throws(() => functions.identity_pointer(-1n), expect);
