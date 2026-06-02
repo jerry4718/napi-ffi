@@ -231,6 +231,10 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: pnpm
           architecture: ${{ matrix.settings.architecture }}
+      - name: setup zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
       - name: Install dependencies
         run: pnpm install
       - name: Download artifacts
@@ -268,6 +272,10 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: pnpm
+      - name: setup zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
       - name: Output docker params
         id: docker
         run: |

@@ -1,20 +1,11 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-const testDir = path.join(process.cwd(), '__test__');
+const fixtureBuildDir = path.join(process.cwd(), '__test__', 'fixture_library')
 const common = {
-  buildType: process.env.BUILDTYPE || 'Debug',
-  skipIfFFIMissing() {},
-};
+  isWindows: process.platform === 'win32',
+}
 
-common.skipIfFFIMissing();
-
-const fixtureBuildDir = path.join(
-  testDir,
-  'fixture_library',
-  'build',
-  common.buildType,
-);
 const libraryPath = path.join(
   fixtureBuildDir,
   process.platform === 'win32' ? 'ffi_test_library.dll' :
