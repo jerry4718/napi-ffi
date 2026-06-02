@@ -8,7 +8,7 @@ common.skipIfFFIMissing();
 const { constants: bufferConstants } = require('node:buffer');
 const assert = require('node:assert');
 const ffi = require('../index.js');
-const { fixtureSymbols, libraryPath } = require('./ffi-test-common');
+const { fixtureSymbols, libraryPath, nativeSize } = require('./ffi-test-common');
 
 const { lib, functions: symbols } = ffi.dlopen(libraryPath, {
   allocate_memory: fixtureSymbols.allocate_memory,
@@ -22,7 +22,7 @@ function withAllocations(fn) {
   const allocations = new Set();
 
   function alloc(size) {
-    const ptr = symbols.allocate_memory(BigInt(size));
+    const ptr = symbols.allocate_memory(nativeSize(size));
     allocations.add(ptr);
     return ptr;
   }

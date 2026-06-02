@@ -9,13 +9,13 @@ const assert = require('node:assert');
 const { spawnSync } = require('node:child_process');
 
 const ffi = require('../index.js');
-const { cString, fixtureSymbols, libraryPath } = require('./ffi-test-common');
+const { cString, fixtureSymbols, libraryPath, nativeSize } = require('./ffi-test-common');
 
 function loggedTest(title, fn) {
-  test(title, async (t) => {
+  test(title, (t) => {
     console.error(`[ffi-calls] start: ${title}`);
     try {
-      return await fn(t);
+      return fn(t);
     } catch (error) {
       console.error(`[ffi-calls] end: ${title}\n ============\n ${error.message || error} \n ============ `)
     } finally {
@@ -131,13 +131,13 @@ loggedTest('ffi typed array accessors work', () => {
   const { lib, functions: symbols } = getLibrary();
   try {
     const ints = new Int32Array([10, 20, 30, 40]);
-    assert.strictEqual(symbols.array_get_i32(ints, 2n), 30);
-    symbols.array_set_i32(ints, 1n, 22);
+    assert.strictEqual(symbols.array_get_i32(ints, nativeSize(2)), 30);
+    symbols.array_set_i32(ints, nativeSize(1), 22);
     assert.deepStrictEqual([...ints], [10, 22, 30, 40]);
 
     const doubles = new Float64Array([1, 2, 3, 4]);
-    assert.strictEqual(symbols.array_get_f64(doubles, 1n), 2);
-    symbols.array_set_f64(doubles, 2n, 39.5);
+    assert.strictEqual(symbols.array_get_f64(doubles, nativeSize(1)), 2);
+    symbols.array_set_f64(doubles, nativeSize(2), 39.5);
     assert.deepStrictEqual([...doubles], [1, 2, 39.5, 4]);
   } finally {
     lib.close();
@@ -367,7 +367,7 @@ loggedTest('ffi aborts on cross-thread callback invocation', () => {
   assertCrossThreadCallbackAbort();
 });
 
-loggedTest('ffi unrefCallback releases callback function', async () => {
+test('ffi unrefCallback releases callback function', async () => {
   const { lib, functions: symbols } = getLibrary();
   try {
     let callback = () => 1;

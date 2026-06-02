@@ -24,6 +24,11 @@ function ensureFixtureLibrary() {
 
 ensureFixtureLibrary();
 
+const { isize, usize, nativeSize } =
+  process.arch === 'ia32' || process.arch === 'arm'
+    ? { isize: 'i32', usize: 'u32', nativeSize: Number }
+    : { isize: 'i64', usize: 'u64', nativeSize: BigInt }
+
 const fixtureSymbols = {
   add_i8: { parameters: ['i8', 'i8'], result: 'i8' },
   add_u8: { parameters: ['u8', 'u8'], result: 'u8' },
@@ -66,12 +71,12 @@ const fixtureSymbols = {
   sum_five_i32: { parameters: ['i32', 'i32', 'i32', 'i32', 'i32'], result: 'i32' },
   sum_five_f64: { parameters: ['f64', 'f64', 'f64', 'f64', 'f64'], result: 'f64' },
   mixed_operation: { parameters: ['i32', 'f32', 'f64', 'u32'], result: 'f64' },
-  allocate_memory: { parameters: ['u64'], result: 'pointer' },
+  allocate_memory: { parameters: [usize], result: 'pointer' },
   deallocate_memory: { parameters: ['pointer'], result: 'void' },
-  array_get_i32: { parameters: ['pointer', 'u64'], result: 'i32' },
-  array_set_i32: { parameters: ['pointer', 'u64', 'i32'], result: 'void' },
-  array_get_f64: { parameters: ['pointer', 'u64'], result: 'f64' },
-  array_set_f64: { parameters: ['pointer', 'u64', 'f64'], result: 'void' },
+  array_get_i32: { parameters: ['pointer', usize], result: 'i32' },
+  array_set_i32: { parameters: ['pointer', usize, 'i32'], result: 'void' },
+  array_get_f64: { parameters: ['pointer', usize], result: 'f64' },
+  array_set_f64: { parameters: ['pointer', usize, 'f64'], result: 'void' },
 };
 
 if (!common.isWindows) {
@@ -86,4 +91,5 @@ export {
   cString,
   fixtureSymbols,
   libraryPath,
+  nativeSize,
 };
