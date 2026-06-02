@@ -239,29 +239,52 @@ loggedTest('ffi callback ref and unref APIs work', () => {
 
 loggedTest('ffi validates invalid arguments', () => {
   const { lib, functions: symbols } = getLibrary();
+  let row = 0;
   try {
     assert.throws(() => symbols.add_i32(1), /Invalid argument count: expected 2, got 1/);
+    console.error(`ffi validates invalid arguments ${ row ++ }`);
     assert.throws(() => symbols.add_i32('1', 2), /Argument 0 must be an int32/);
+    console.error(`ffi validates invalid arguments ${ row ++ }`);
     assert.throws(() => symbols.add_i8(1.5, 1), /Argument 0 must be an int8/);
+    console.error(`ffi validates invalid arguments ${ row ++ }`);
     assert.throws(() => symbols.add_i8(200, 1), /Argument 0 must be an int8/);
+    console.error(`ffi validates invalid arguments ${ row ++ }`);
     assert.throws(() => symbols.add_u8(Number.NaN, 1), /Argument 0 must be a uint8/);
+    console.error(`ffi validates invalid arguments ${ row ++ }`);
     assert.throws(() => symbols.add_u8(300, 1), /Argument 0 must be a uint8/);
+    console.error(`ffi validates invalid arguments ${ row ++ }`);
     assert.throws(() => symbols.add_i16(1.5, 1), /Argument 0 must be an int16/);
+    console.error(`ffi validates invalid arguments ${ row ++ }`);
     assert.throws(() => symbols.add_i16(40_000, 1), /Argument 0 must be an int16/);
+    console.error(`ffi validates invalid arguments ${ row ++ }`);
     assert.throws(() => symbols.add_u16(Number.NaN, 1), /Argument 0 must be a uint16/);
+    console.error(`ffi validates invalid arguments ${ row ++ }`);
     assert.throws(() => symbols.add_u16(70_000, 1), /Argument 0 must be a uint16/);
+    console.error(`ffi validates invalid arguments ${ row ++ }`);
     assert.throws(() => symbols.add_i64(1, 2n), /Argument 0 must be an int64/);
+    console.error(`ffi validates invalid arguments ${ row ++ }`);
     assert.throws(() => symbols.add_i64(1.5, 2n), /Argument 0 must be an int64/);
+    console.error(`ffi validates invalid arguments ${ row ++ }`);
     assert.throws(() => symbols.add_i64(2n ** 63n, 2n), /Argument 0 must be an int64/);
+    console.error(`ffi validates invalid arguments ${ row ++ }`);
     assert.throws(() => symbols.add_i64(-(2n ** 63n) - 1n, 2n), /Argument 0 must be an int64/);
+    console.error(`ffi validates invalid arguments ${ row ++ }`);
     assert.throws(() => symbols.add_u64('1', 2n), /Argument 0 must be a uint64/);
+    console.error(`ffi validates invalid arguments ${ row ++ }`);
     assert.throws(() => symbols.add_u64(1, 2n), /Argument 0 must be a uint64/);
+    console.error(`ffi validates invalid arguments ${ row ++ }`);
     assert.throws(() => symbols.add_u64(Number.NaN, 2n), /Argument 0 must be a uint64/);
+    console.error(`ffi validates invalid arguments ${ row ++ }`);
     assert.throws(() => symbols.add_u64(-1n, 2n), /Argument 0 must be a uint64/);
+    console.error(`ffi validates invalid arguments ${ row ++ }`);
     assert.throws(() => symbols.add_u64(2n ** 64n, 2n), /Argument 0 must be a uint64/);
+    console.error(`ffi validates invalid arguments ${ row ++ }`);
     assert.throws(() => symbols.identity_pointer(-1n), /Argument 0 must be a non-negative pointer bigint/);
+    console.error(`ffi validates invalid arguments ${ row ++ }`);
     assert.throws(() => symbols.string_length('hello\0ffi'), /Argument 0 must not contain null bytes/);
+    console.error(`ffi validates invalid arguments ${ row ++ }`);
     assert.throws(() => symbols.string_length(Symbol('x')), /must be a buffer, an ArrayBuffer, a string, or a bigint/);
+    console.error(`ffi validates invalid arguments ${ row ++ }`);
 
     if (process.arch === 'ia32' || process.arch === 'arm') {
       assert.throws(() => symbols.identity_pointer(2n ** 32n), /platform pointer range|non-negative pointer bigint/);
