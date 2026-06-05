@@ -3,6 +3,7 @@ use std::ffi::{c_char, c_void, CStr, CString};
 use std::ptr;
 
 use libffi::middle::{Arg, Cif, CodePtr, Type as FFIType};
+use napi::bindgen_prelude::i64n;
 use napi::bindgen_prelude::*;
 use napi::Env;
 
@@ -59,10 +60,12 @@ pub trait TypedTarget: Send + Sync + 'static {
   unsafe fn drop_callback_return(&self, storage: *mut u8);
 }
 
+#[inline]
 fn invalid_arg_value(message: impl Into<String>) -> Error {
   Error::new(Status::InvalidArg, message.into())
 }
 
+#[inline]
 fn invalid_callback_return() -> Error {
   Error::new(
     Status::InvalidArg,
@@ -70,43 +73,139 @@ fn invalid_callback_return() -> Error {
   )
 }
 
-fn bigint_to_u64(value: &BigInt, message: &str) -> Result<u64> {
+#[inline]
+fn bigint_to_u64(value: &BigInt) -> Option<u64> {
   let (signed, raw, lossless) = value.get_u64();
   if signed || !lossless {
-    return Err(invalid_arg_value(message));
+    return None;
   }
-  Ok(raw)
+  Some(raw)
 }
 
-fn bigint_to_i64(value: &BigInt, message: &str) -> Result<i64> {
+#[inline]
+fn bigint_to_i64(value: &BigInt) -> Option<i64> {
   let (raw, lossless) = value.get_i64();
   if !lossless {
-    return Err(invalid_arg_value(message));
+    return None;
   }
-  Ok(raw)
+  Some(raw)
 }
 
+#[inline]
 fn cast_f64(value: Unknown<'_>) -> Result<f64> {
-  unsafe { value.cast() }
+  f64::from_unknown(value)
 }
 
+#[inline]
 fn cast_bigint(value: Unknown<'_>) -> Result<BigInt> {
-  unsafe { value.cast() }
+  BigInt::from_unknown(value)
 }
 
+#[inline]
 fn cast_string(value: Unknown<'_>) -> Result<String> {
-  unsafe { value.cast() }
+  String::from_unknown(value)
 }
 
+#[inline]
+fn strict_signed_integer<T>(number: f64, min: T, max: T) -> Option<i64>
+where
+  i64: From<T>,
+{
+  if !number.is_finite()
+    || number.floor() != number
+    || number < i64::from(min) as f64
+    || number > i64::from(max) as f64
+  {
+    return None;
+  }
+  Some(number as i64)
+}
+
+#[inline]
+fn strict_unsigned_integer<T>(number: f64, max: T) -> Option<u64>
+where
+  u64: From<T>,
+{
+  if !number.is_finite()
+    || number.floor() != number
+    || number < 0.0
+    || number > u64::from(max) as f64
+  {
+    return None;
+  }
+  Some(number as u64)
+}
+
+#[inline]
+fn number_to_signed_integer<T>(
+  value: Unknown<'_>,
+  index: usize,
+  min: T,
+  max: T,
+  type_name: &'static str,
+) -> Result<T>
+where
+  T: TryFrom<i64>,
+  i64: From<T>,
+{
+  let number = cast_f64(value)?;
+  strict_signed_integer(number, min, max)
+    .and_then(|value| T::try_from(value).ok())
+    .ok_or_else(|| invalid_arg_value(format!("Argument {index} must be an {type_name}")))
+}
+
+#[inline]
+fn number_to_unsigned_integer<T>(
+  value: Unknown<'_>,
+  index: usize,
+  max: T,
+  type_name: &'static str,
+) -> Result<T>
+where
+  T: TryFrom<u64>,
+  u64: From<T>,
+{
+  let number = cast_f64(value)?;
+  strict_unsigned_integer(number, max)
+    .and_then(|value| T::try_from(value).ok())
+    .ok_or_else(|| invalid_arg_value(format!("Argument {index} must be a {type_name}")))
+}
+
+#[inline]
+fn callback_to_signed_integer<T>(value: Unknown<'_>, min: T, max: T) -> Result<T>
+where
+  T: TryFrom<i64>,
+  i64: From<T>,
+{
+  let number = cast_f64(value).map_err(|_| invalid_callback_return())?;
+  strict_signed_integer(number, min, max)
+    .and_then(|value| T::try_from(value).ok())
+    .ok_or_else(invalid_callback_return)
+}
+
+#[inline]
+fn callback_to_unsigned_integer<T>(value: Unknown<'_>, max: T) -> Result<T>
+where
+  T: TryFrom<u64>,
+  u64: From<T>,
+{
+  let number = cast_f64(value).map_err(|_| invalid_callback_return())?;
+  strict_unsigned_integer(number, max)
+    .and_then(|value| T::try_from(value).ok())
+    .ok_or_else(invalid_callback_return)
+}
+
+#[inline]
 fn raw_pointer_from_unknown(value: Unknown<'_>, index: usize) -> Result<*mut c_void> {
   match value.get_type()? {
     ValueType::Null | ValueType::Undefined => Ok(ptr::null_mut()),
     ValueType::BigInt => {
       let bigint = cast_bigint(value)?;
-      let raw = bigint_to_u64(
-        &bigint,
-        &format!("Argument {index} must be a non-negative pointer bigint"),
-      )?;
+      let raw = bigint_to_u64(&bigint).ok_or_else(|| {
+        invalid_arg_value(format!(
+          "Argument {index} must be a non-negative pointer bigint"
+        ))
+      })?;
       let ptr_value = usize::try_from(raw)
         .map_err(|_| invalid_arg_value("Argument exceeds the platform pointer range"))?;
       Ok(ptr_value as *mut c_void)
@@ -125,6 +224,7 @@ enum PointerArgumentCategory {
   String(CString),
 }
 
+#[inline]
 fn pointer_argument_from_unknown(
   value: Unknown<'_>,
   index: usize,
@@ -150,13 +250,24 @@ macro_rules! read_scalar {
 
 macro_rules! numeric_target {
   (
-    $name:ident,
-    $ffi_type:expr,
-    $rust_ty:ty,
-    $type_name:literal,
+    $name:ident ($type_name:literal, $rust_ty:ty, $ffi_type:expr, $env_name:ident, $val_name:ident, $idx_name:ident),
+    $arg_check:expr,
+    $callback_check:expr
+    $(,)?
+  ) => {
+    numeric_target!(
+      $name($type_name, $rust_ty, $ffi_type, $env_name, $val_name, $idx_name),
+      $arg_check,
+      $callback_check,
+      { <$rust_ty>::into_unknown($val_name, $env_name)? },
+    );
+  };
+  (
+    $name:ident ($type_name:literal, $rust_ty:ty, $ffi_type:expr, $env_name:ident, $val_name:ident, $idx_name:ident),
     $arg_check:expr,
     $callback_check:expr,
     $to_js:expr
+    $(,)?
   ) => {
     pub struct $name;
 
@@ -176,11 +287,11 @@ macro_rules! numeric_target {
       unsafe fn formalize_function_arg<'env>(
         &self,
         _env: &'env Env,
-        value: Unknown<'env>,
-        index: usize,
+        $val_name: Unknown<'env>,
+        $idx_name: usize,
         storage: *mut u8,
       ) -> Result<()> {
-        let parsed: $rust_ty = $arg_check(value, index)?;
+        let parsed: $rust_ty = $arg_check;
         unsafe { ptr::write(storage.cast::<$rust_ty>(), parsed) };
         Ok(())
       }
@@ -193,23 +304,25 @@ macro_rules! numeric_target {
 
       unsafe fn formalize_function_return<'env>(
         &self,
-        env: &'env Env,
+        $env_name: &'env Env,
         cif: &Cif,
         fn_ptr: CodePtr,
         args: &[Arg<'_>],
       ) -> Result<Unknown<'env>> {
-        let value: $rust_ty = unsafe { cif.call(fn_ptr, args) };
-        $to_js(env, value)
+        let $val_name: $rust_ty = unsafe { cif.call(fn_ptr, args) };
+        let result = $to_js;
+        Ok(result)
       }
 
       unsafe fn formalize_callback_arg<'env>(
         &self,
-        env: &'env Env,
+        $env_name: &'env Env,
         arg_ptr: *const c_void,
         _index: usize,
       ) -> Result<Unknown<'env>> {
-        let value: $rust_ty = read_scalar!(arg_ptr, $rust_ty);
-        $to_js(env, value)
+        let $val_name: $rust_ty = read_scalar!(arg_ptr, $rust_ty);
+        let result = $to_js;
+        Ok(result)
       }
 
       fn callback_return_layout(&self) -> Layout {
@@ -219,10 +332,10 @@ macro_rules! numeric_target {
       unsafe fn formalize_callback_return<'env>(
         &self,
         _env: &'env Env,
-        value: Unknown<'env>,
+        $val_name: Unknown<'env>,
         storage: *mut u8,
       ) -> Result<()> {
-        let parsed: $rust_ty = $callback_check(value)?;
+        let parsed: $rust_ty = $callback_check;
         unsafe { ptr::write_unaligned(storage.cast::<$rust_ty>(), parsed) };
         Ok(())
       }
@@ -236,297 +349,82 @@ macro_rules! numeric_target {
   };
 }
 
-fn number_to_i8(value: Unknown<'_>, index: usize) -> Result<i8> {
-  let number = cast_f64(value)?;
-  if number.fract() != 0.0 || !(-128.0..=127.0).contains(&number) {
-    return Err(invalid_arg_value(format!(
-      "Argument {index} must be an int8"
-    )));
-  }
-  Ok(number as i8)
-}
+numeric_target!(
+  I8Target("int8", i8, FFIType::i8(), env, value, index),
+  { number_to_signed_integer(value, index, i8::MIN, i8::MAX, "int8")? },
+  { callback_to_signed_integer(value, i8::MIN, i8::MAX)? },
+);
 
-fn number_to_u8(value: Unknown<'_>, index: usize) -> Result<u8> {
-  let number = cast_f64(value)?;
-  if number.fract() != 0.0 || !(0.0..=255.0).contains(&number) {
-    return Err(invalid_arg_value(format!(
-      "Argument {index} must be a uint8"
-    )));
-  }
-  Ok(number as u8)
-}
+numeric_target!(
+  U8Target("uint8", u8, FFIType::u8(), env, value, index),
+  { number_to_unsigned_integer(value, index, u8::MAX, "uint8")? },
+  { callback_to_unsigned_integer(value, u8::MAX)? },
+);
 
-fn number_to_i16(value: Unknown<'_>, index: usize) -> Result<i16> {
-  let number = cast_f64(value)?;
-  if number.fract() != 0.0 || !(-32768.0..=32767.0).contains(&number) {
-    return Err(invalid_arg_value(format!(
-      "Argument {index} must be an int16"
-    )));
-  }
-  Ok(number as i16)
-}
+numeric_target!(
+  I16Target("int16", i16, FFIType::i16(), env, value, index),
+  { number_to_signed_integer(value, index, i16::MIN, i16::MAX, "int16")? },
+  { callback_to_signed_integer(value, i16::MIN, i16::MAX)? },
+);
 
-fn number_to_u16(value: Unknown<'_>, index: usize) -> Result<u16> {
-  let number = cast_f64(value)?;
-  if number.fract() != 0.0 || !(0.0..=65535.0).contains(&number) {
-    return Err(invalid_arg_value(format!(
-      "Argument {index} must be a uint16"
-    )));
-  }
-  Ok(number as u16)
-}
+numeric_target!(
+  U16Target("uint16", u16, FFIType::u16(), env, value, index),
+  { number_to_unsigned_integer(value, index, u16::MAX, "uint16")? },
+  { callback_to_unsigned_integer(value, u16::MAX)? },
+);
 
-fn number_to_i32(value: Unknown<'_>, index: usize) -> Result<i32> {
-  let number = cast_f64(value)?;
-  if !number.is_finite()
-    || number.fract() != 0.0
-    || !((i32::MIN as f64)..=(i32::MAX as f64)).contains(&number)
+numeric_target!(
+  I32Target("int32", i32, FFIType::i32(), env, value, index),
+  { number_to_signed_integer(value, index, i32::MIN, i32::MAX, "int32")? },
+  { callback_to_signed_integer(value, i32::MIN, i32::MAX)? },
+);
+
+numeric_target!(
+  U32Target("uint32", u32, FFIType::u32(), env, value, index),
+  { number_to_unsigned_integer(value, index, u32::MAX, "uint32")? },
+  { callback_to_unsigned_integer(value, u32::MAX)? },
+);
+
+numeric_target!(
+  I64Target("int64", i64, FFIType::i64(), env, value, index),
   {
-    return Err(invalid_arg_value(format!(
-      "Argument {index} must be an int32"
-    )));
-  }
-  Ok(number as i32)
-}
-
-fn number_to_u32(value: Unknown<'_>, index: usize) -> Result<u32> {
-  let number = cast_f64(value)?;
-  if !number.is_finite() || number.fract() != 0.0 || !(0.0..=(u32::MAX as f64)).contains(&number) {
-    return Err(invalid_arg_value(format!(
-      "Argument {index} must be a uint32"
-    )));
-  }
-  Ok(number as u32)
-}
-
-fn bigint_to_i64_arg(value: Unknown<'_>, index: usize) -> Result<i64> {
-  let bigint = cast_bigint(value)?;
-  bigint_to_i64(&bigint, &format!("Argument {index} must be an int64"))
-}
-
-fn bigint_to_u64_arg(value: Unknown<'_>, index: usize) -> Result<u64> {
-  let bigint = cast_bigint(value)?;
-  bigint_to_u64(&bigint, &format!("Argument {index} must be a uint64"))
-}
-
-fn number_to_f32(value: Unknown<'_>, _index: usize) -> Result<f32> {
-  let number = cast_f64(value)?;
-  Ok(number as f32)
-}
-
-fn number_to_f64(value: Unknown<'_>, _index: usize) -> Result<f64> {
-  let number = cast_f64(value)?;
-  Ok(number)
-}
-
-fn callback_to_i8(value: Unknown<'_>) -> Result<i8> {
-  let number = cast_f64(value)?;
-  if number.fract() != 0.0 || !(-128.0..=127.0).contains(&number) {
-    return Err(invalid_callback_return());
-  }
-  Ok(number as i8)
-}
-
-fn callback_to_u8(value: Unknown<'_>) -> Result<u8> {
-  let number = cast_f64(value)?;
-  if number.fract() != 0.0 || !(0.0..=255.0).contains(&number) {
-    return Err(invalid_callback_return());
-  }
-  Ok(number as u8)
-}
-
-fn callback_to_i16(value: Unknown<'_>) -> Result<i16> {
-  let number = cast_f64(value)?;
-  if number.fract() != 0.0 || !(-32768.0..=32767.0).contains(&number) {
-    return Err(invalid_callback_return());
-  }
-  Ok(number as i16)
-}
-
-fn callback_to_u16(value: Unknown<'_>) -> Result<u16> {
-  let number = cast_f64(value)?;
-  if number.fract() != 0.0 || !(0.0..=65535.0).contains(&number) {
-    return Err(invalid_callback_return());
-  }
-  Ok(number as u16)
-}
-
-fn callback_to_i32(value: Unknown<'_>) -> Result<i32> {
-  let number = cast_f64(value)?;
-  if !number.is_finite()
-    || number.fract() != 0.0
-    || !((i32::MIN as f64)..=(i32::MAX as f64)).contains(&number)
+    let bigint = cast_bigint(value)?;
+    bigint_to_i64(&bigint)
+      .ok_or_else(|| invalid_arg_value(format!("Argument {index} must be an int64")))?
+  },
   {
-    return Err(invalid_callback_return());
-  }
-  Ok(number as i32)
-}
-
-fn callback_to_u32(value: Unknown<'_>) -> Result<u32> {
-  let number = cast_f64(value)?;
-  if !number.is_finite() || number.fract() != 0.0 || !(0.0..=(u32::MAX as f64)).contains(&number) {
-    return Err(invalid_callback_return());
-  }
-  Ok(number as u32)
-}
-
-fn callback_to_i64(value: Unknown<'_>) -> Result<i64> {
-  let bigint = cast_bigint(value).map_err(|_| invalid_callback_return())?;
-  bigint_to_i64(
-    &bigint,
-    "Callback returned invalid value for declared FFI type",
-  )
-  .map_err(|_| invalid_callback_return())
-}
-
-fn callback_to_u64(value: Unknown<'_>) -> Result<u64> {
-  let bigint = cast_bigint(value).map_err(|_| invalid_callback_return())?;
-  bigint_to_u64(
-    &bigint,
-    "Callback returned invalid value for declared FFI type",
-  )
-  .map_err(|_| invalid_callback_return())
-}
-
-fn callback_to_f32(value: Unknown<'_>) -> Result<f32> {
-  let number = cast_f64(value).map_err(|_| invalid_callback_return())?;
-  Ok(number as f32)
-}
-
-fn callback_to_f64(value: Unknown<'_>) -> Result<f64> {
-  let number = cast_f64(value).map_err(|_| invalid_callback_return())?;
-  Ok(number)
-}
-
-fn i8_to_js(env: &Env, value: i8) -> Result<Unknown<'_>> {
-  value.into_unknown(env)
-}
-
-fn u8_to_js(env: &Env, value: u8) -> Result<Unknown<'_>> {
-  value.into_unknown(env)
-}
-
-fn i16_to_js(env: &Env, value: i16) -> Result<Unknown<'_>> {
-  value.into_unknown(env)
-}
-
-fn u16_to_js(env: &Env, value: u16) -> Result<Unknown<'_>> {
-  value.into_unknown(env)
-}
-
-fn i32_to_js(env: &Env, value: i32) -> Result<Unknown<'_>> {
-  value.into_unknown(env)
-}
-
-fn u32_to_js(env: &Env, value: u32) -> Result<Unknown<'_>> {
-  value.into_unknown(env)
-}
-
-fn i64_to_js(env: &Env, value: i64) -> Result<Unknown<'_>> {
-  BigInt::from(value).into_unknown(env)
-}
-
-fn u64_to_js(env: &Env, value: u64) -> Result<Unknown<'_>> {
-  BigInt::from(value).into_unknown(env)
-}
-
-fn f32_to_js(env: &Env, value: f32) -> Result<Unknown<'_>> {
-  f64::from(value).into_unknown(env)
-}
-
-fn f64_to_js(env: &Env, value: f64) -> Result<Unknown<'_>> {
-  value.into_unknown(env)
-}
-
-numeric_target!(
-  I8Target,
-  FFIType::i8(),
-  i8,
-  "int8",
-  number_to_i8,
-  callback_to_i8,
-  i8_to_js
+    let bigint = cast_bigint(value).map_err(|_| invalid_callback_return())?;
+    bigint_to_i64(&bigint).ok_or_else(invalid_callback_return)?
+  },
+  { i64n(value).into_unknown(env)? }
 );
+
 numeric_target!(
-  U8Target,
-  FFIType::u8(),
-  u8,
-  "uint8",
-  number_to_u8,
-  callback_to_u8,
-  u8_to_js
+  U64Target("uint64", u64, FFIType::u64(), env, value, index),
+  {
+    let bigint = cast_bigint(value)?;
+    bigint_to_u64(&bigint)
+      .ok_or_else(|| invalid_arg_value(format!("Argument {index} must be a uint64")))?
+  },
+  {
+    let bigint = cast_bigint(value).map_err(|_| invalid_callback_return())?;
+    bigint_to_u64(&bigint).ok_or_else(invalid_callback_return)?
+  },
 );
+
 numeric_target!(
-  I16Target,
-  FFIType::i16(),
-  i16,
-  "int16",
-  number_to_i16,
-  callback_to_i16,
-  i16_to_js
+  F32Target("float32", f32, FFIType::f32(), env, value, index),
+  {
+    cast_f64(value).map_err(|_| invalid_arg_value(format!("Argument {index} must be a float")))?
+      as f32
+  },
+  { cast_f64(value).map_err(|_| invalid_callback_return())? as f32 },
 );
+
 numeric_target!(
-  U16Target,
-  FFIType::u16(),
-  u16,
-  "uint16",
-  number_to_u16,
-  callback_to_u16,
-  u16_to_js
-);
-numeric_target!(
-  I32Target,
-  FFIType::i32(),
-  i32,
-  "int32",
-  number_to_i32,
-  callback_to_i32,
-  i32_to_js
-);
-numeric_target!(
-  U32Target,
-  FFIType::u32(),
-  u32,
-  "uint32",
-  number_to_u32,
-  callback_to_u32,
-  u32_to_js
-);
-numeric_target!(
-  I64Target,
-  FFIType::i64(),
-  i64,
-  "int64",
-  bigint_to_i64_arg,
-  callback_to_i64,
-  i64_to_js
-);
-numeric_target!(
-  U64Target,
-  FFIType::u64(),
-  u64,
-  "uint64",
-  bigint_to_u64_arg,
-  callback_to_u64,
-  u64_to_js
-);
-numeric_target!(
-  F32Target,
-  FFIType::f32(),
-  f32,
-  "float32",
-  number_to_f32,
-  callback_to_f32,
-  f32_to_js
-);
-numeric_target!(
-  F64Target,
-  FFIType::f64(),
-  f64,
-  "float64",
-  number_to_f64,
-  callback_to_f64,
-  f64_to_js
+  F64Target("float64", f64, FFIType::f64(), env, value, index),
+  { cast_f64(value).map_err(|_| invalid_arg_value(format!("Argument {index} must be a double")))? },
+  { cast_f64(value).map_err(|_| invalid_callback_return())? },
 );
 
 #[repr(C)]
