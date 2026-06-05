@@ -315,7 +315,7 @@ test('dynamic library APIs validate failures and bad signatures', () => {
     assert.throws(() => {
       lib.getFunction('add_i32', new Proxy({}, {
         has(target, key) {
-          if (key === 'result') {
+          if (key === 'return') {
             throw hasTrapError;
           }
           return Reflect.has(target, key);
