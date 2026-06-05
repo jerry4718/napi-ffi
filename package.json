@@ -1,11 +1,11 @@
 {
-  "name": "@ylcc/napi-ffi",
-  "version": "0.0.100",
+  "name": "@mmty/napi-ffi",
+  "version": "0.0.101",
   "description": "Template project for writing node package with napi-rs",
   "main": "index.js",
   "types": "index.d.ts",
   "repository": {
-    "url": "git+ssh://git@github.com/napi-rs/package-template-pnpm.git",
+    "url": "https://github.com/jerry4718/napi-ffi",
     "type": "git"
   },
   "license": "MIT",

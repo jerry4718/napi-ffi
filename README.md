@@ -1,4 +1,4 @@
-# `@ylcc/napi-ffi`
+# `@mmty/napi-ffi`
 
 A native FFI library for Node.js, implemented with `napi-rs`.
 
@@ -28,7 +28,7 @@ This package already supports the core building blocks needed for many FFI scena
 ## Installation
 
 ```bash
-pnpm add @ylcc/napi-ffi
+pnpm add @mmty/napi-ffi
 ```
 
 ## Quick start
@@ -36,7 +36,7 @@ pnpm add @ylcc/napi-ffi
 ### Load a library and call native functions
 
 ```js
-const ffi = require('@ylcc/napi-ffi')
+const ffi = require('@mmty/napi-ffi')
 
 const { lib, functions } = ffi.dlopen('./libmath.so', {
   add_i32: {
@@ -60,7 +60,7 @@ try {
 ### Use strings and pointers
 
 ```js
-const ffi = require('@ylcc/napi-ffi')
+const ffi = require('@mmty/napi-ffi')
 
 const { lib, functions } = ffi.dlopen('./libstrings.so', {
   string_length: {
@@ -91,7 +91,7 @@ try {
 ### Register a JavaScript callback
 
 ```js
-const ffi = require('@ylcc/napi-ffi')
+const ffi = require('@mmty/napi-ffi')
 
 const { lib, functions } = ffi.dlopen('./libcallbacks.so', {
   call_binary_int_callback: {
@@ -119,7 +119,7 @@ try {
 ### Read and write native memory
 
 ```js
-const ffi = require('@ylcc/napi-ffi')
+const ffi = require('@mmty/napi-ffi')
 
 const { lib, functions } = ffi.dlopen('./libmemory.so', {
   allocate_memory: {
