@@ -91,22 +91,22 @@ type FFICallbackReturnValue<T extends FFIType | undefined> =
         ? never
         : FFIReturnValue<T>
 
-type SignatureReturn<S extends FFISignature> = S extends { result: infer T extends FFIType } ? T : undefined
-type SignatureArguments<S extends FFISignature> = S extends { parameters: infer T extends readonly FFIType[] } ? T : readonly []
+type SignatureReturn<S> = S extends { return: infer T extends FFIType } ? T : undefined
+type SignatureArguments<S> = S extends { arguments: infer T extends readonly FFIType[] } ? T : readonly []
 
-type MapFFIArgs<T extends readonly FFIType[]> = number extends T['length']
-  ? Array<number | bigint | string | Buffer | ArrayBuffer | ArrayBufferView | null | undefined>
-  : T extends readonly [infer H extends FFIType, ...infer R extends readonly FFIType[]]
+type MapFFIArgs<T> =
+  T extends FFIType[] | []?
+  T extends [infer H extends FFIType, ...infer R extends FFIType[]]
     ? [FFIArgValue<H>, ...MapFFIArgs<R>]
     : []
+    :never
 
-export type ForeignFunction<S extends FFISignature = FFISignature> =
-  ((...args: MapFFIArgs<SignatureArguments<S>>) => FFIReturnValue<SignatureReturn<S>>) & {
-    readonly pointer: bigint
-  }
+export type ForeignFunction<S> =
+  & ((...args: MapFFIArgs<SignatureArguments<S>>) => FFIReturnValue<SignatureReturn<S>>)
+  & { readonly pointer: bigint }
 
-export type ResolvedFunctions<T extends Record<string, FFISignature>> = {
-  [K in keyof T]: T[K] extends FFISignature ? ForeignFunction<T[K]> : never
+export type ResolvedFunctions<T extends Definitions> = {
+  [K in keyof T]: ForeignFunction<T[K]>
 }
 
 export type ResolvedSymbols = Record<string, bigint>
@@ -123,14 +123,14 @@ export declare class DynamicLibrary {
   constructor(path?: string | null)
 
   get path(): string | null
-  functions: Record<string, ForeignFunction>
+  functions: Record<string, ForeignFunction<unknown>>
   symbols: Record<string, bigint>
 
   close(): void
   [Symbol.dispose](): void
 
   getFunction<S extends FFISignature>(name: string, signature: S): ForeignFunction<S>
-  getFunctions(): Record<string, ForeignFunction>
+  getFunctions(): Record<string, ForeignFunction<unknown>>
   getFunctions<T extends Definitions>(definitions: T): ResolvedFunctions<T>
 
   getSymbol(name: string): bigint

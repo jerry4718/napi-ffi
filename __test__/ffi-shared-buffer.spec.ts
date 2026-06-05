@@ -21,8 +21,8 @@ const native = require('../native.js');
 const ffiBinding = ffi;
 const {
   kSbInvokeSlow,
-  kSbParams,
-  kSbResult,
+  kSbArguments,
+  kSbReturn,
   kSbSharedBuffer,
 } = ffiBinding;
 const rawGetFunctionUnpatched = ffiBinding.DynamicLibrary.prototype.getFunction;
@@ -364,8 +364,8 @@ test('SB metadata is Symbol-keyed, attribute-hardened, and not leaked onto the w
     for (const [name, sym] of [
       ['kSbSharedBuffer', kSbSharedBuffer],
       ['kSbInvokeSlow', kSbInvokeSlow],
-      ['kSbParams', kSbParams],
-      ['kSbResult', kSbResult],
+      ['kSbArguments', kSbArguments],
+      ['kSbReturn', kSbReturn],
     ]) {
       assert.strictEqual(typeof sym, 'symbol', `${name} must be a Symbol`);
     }
@@ -373,8 +373,8 @@ test('SB metadata is Symbol-keyed, attribute-hardened, and not leaked onto the w
     // Numeric-only signature: kSbInvokeSlow absent; the rest present and hardened.
     for (const [name, sym] of [
       ['kSbSharedBuffer', kSbSharedBuffer],
-      ['kSbParams', kSbParams],
-      ['kSbResult', kSbResult],
+      ['kSbArguments', kSbArguments],
+      ['kSbReturn', kSbReturn],
     ]) {
       const desc = Object.getOwnPropertyDescriptor(rawFn, sym);
       assert.ok(desc !== undefined, `${name} missing on pure-numeric SB function`);
@@ -397,8 +397,8 @@ test('SB metadata is Symbol-keyed, attribute-hardened, and not leaked onto the w
     assert.deepStrictEqual(Object.keys(rawFn), ['pointer']);
     const ownSyms = Object.getOwnPropertySymbols(rawFn);
     assert.ok(ownSyms.includes(kSbSharedBuffer));
-    assert.ok(ownSyms.includes(kSbParams));
-    assert.ok(ownSyms.includes(kSbResult));
+    assert.ok(ownSyms.includes(kSbArguments));
+    assert.ok(ownSyms.includes(kSbReturn));
 
     // Internals must not be forwarded by `inheritMetadata`.
     const { lib, functions } = ffi.dlopen(libraryPath, {
@@ -407,8 +407,8 @@ test('SB metadata is Symbol-keyed, attribute-hardened, and not leaked onto the w
     try {
       assert.strictEqual(functions.add_i32[kSbSharedBuffer], undefined);
       assert.strictEqual(functions.add_i32[kSbInvokeSlow], undefined);
-      assert.strictEqual(functions.add_i32[kSbParams], undefined);
-      assert.strictEqual(functions.add_i32[kSbResult], undefined);
+      assert.strictEqual(functions.add_i32[kSbArguments], undefined);
+      assert.strictEqual(functions.add_i32[kSbReturn], undefined);
     } finally {
       lib.close();
     }

@@ -3,10 +3,10 @@ import { createRequire } from 'node:module'
 import path from 'node:path'
 
 import ffi from '../index.js'
-import { DataType, load as loadFfiRs, open as openFfiRs } from 'ffi-rs'
+import { DataType, load as loadFfiRs, open as openFfiRs, define as defineFfiRs } from 'ffi-rs'
 
 const require = createRequire(import.meta.url)
-const { libraryPath } = require('../__test__/ffi-test-common.js')
+const { libraryPath } = require('../__test__/ffi-test-common')
 
 let nodeFfi: null | typeof import('node:ffi') = null
 try {
@@ -16,7 +16,7 @@ try {
 }
 
 const napiFfiLibrary = ffi.dlopen(libraryPath, {
-  add_i32: { parameters: ['i32', 'i32'], result: 'i32' },
+  add_i32: { arguments: ['i32', 'i32'], return: 'i32' },
 })
 const napiFfiAddI32 = napiFfiLibrary.functions.add_i32
 
@@ -26,7 +26,18 @@ openFfiRs({
   path: path.resolve(libraryPath),
 })
 
-function ffiRsAddI32(a: number, b: number) {
+
+const ffiRsLibrary = defineFfiRs({
+  add_i32: {
+    library: ffiRsLibraryName,
+    retType: DataType.I32,
+    paramsType: [DataType.I32, DataType.I32],
+  },
+})
+
+const ffiRsAddI32 = ffiRsLibrary.add_i32;
+
+function ffiRsAddI32_2(a: number, b: number) {
   return loadFfiRs({
     library: ffiRsLibraryName,
     funcName: 'add_i32',
@@ -35,6 +46,7 @@ function ffiRsAddI32(a: number, b: number) {
     paramsValue: [a, b],
   })
 }
+
 
 const nodeFfiLibrary = nodeFfi?.dlopen(libraryPath, {
   add_i32: { arguments: ['i32', 'i32'], return: 'i32' },
@@ -49,9 +61,13 @@ const expected = 42
 if (napiFfiAddI32(10, 32) !== expected) {
   throw new Error('napi-ffi benchmark setup failed')
 }
-if (ffiRsAddI32(10, 32) !== expected) {
+if (ffiRsAddI32([10, 32]) !== expected) {
   throw new Error('ffi-rs benchmark setup failed')
 }
+if (ffiRsAddI32_2(10, 32) !== expected) {
+  throw new Error('ffi-rs benchmark setup failed')
+}
+
 if (nodeFfiAddI32 && nodeFfiAddI32(10, 32) !== expected) {
   throw new Error('node:ffi benchmark setup failed')
 }
@@ -66,7 +82,11 @@ bench.add('napi-ffi add_i32', () => {
 })
 
 bench.add('ffi-rs add_i32', () => {
-  ffiRsAddI32(10, 32)
+  ffiRsAddI32([10, 32])
+})
+
+bench.add('ffi-rs add_i32_2', () => {
+  ffiRsAddI32_2(10, 32)
 })
 
 if (nodeFfiAddI32) {
