@@ -5,8 +5,6 @@ use std::ffi::c_void;
 use libffi::middle::{Arg, Closure, CodePtr, Ret};
 #[cfg(unix)]
 use libloading::os::unix::Library as UnixLibrary;
-#[cfg(windows)]
-use libloading::os::windows::Library as WindowsLibrary;
 use libloading::Library;
 use napi::bindgen_prelude::*;
 use napi::Env;
@@ -268,26 +266,35 @@ fn callback_pointer_from_closure(closure: &Closure<'_>) -> Result<BigInt> {
   Ok(BigInt::from(raw))
 }
 
+fn open_library(path: Option<String>) -> Result<(Option<String>, Library)> {
+  match path {
+    Some(path_value) => {
+      let library = unsafe { Library::new(&path_value) }
+        .map_err(|error| Error::new(Status::GenericFailure, format!("dlopen failed: {error}")))?;
+      Ok((Some(path_value), library))
+    }
+    None => open_current_process_library(),
+  }
+}
+
+#[cfg(unix)]
+fn open_current_process_library() -> Result<(Option<String>, Library)> {
+  Ok((None, UnixLibrary::this().into()))
+}
+
+#[cfg(windows)]
+fn open_current_process_library() -> Result<(Option<String>, Library)> {
+  Err(Error::new(
+    Status::InvalidArg,
+    "Library path must be a string; null is not supported on Windows".to_owned(),
+  ))
+}
+
 #[napi]
 impl DynamicLibrary {
   #[napi(constructor)]
   pub fn new(path: Option<String>) -> Result<Self> {
-    let (path_value, library) = match path {
-      Some(path_value) => {
-        let library = unsafe { Library::new(&path_value) }
-          .map_err(|error| Error::new(Status::GenericFailure, format!("dlopen failed: {error}")))?;
-        (Some(path_value), library)
-      }
-      None => {
-        #[cfg(unix)]
-        let library: Library = UnixLibrary::this().into();
-        #[cfg(windows)]
-        let library: Library = WindowsLibrary::this()
-          .map(Into::into)
-          .map_err(|error| Error::new(Status::GenericFailure, format!("dlopen failed: {error}")))?;
-        (None, library)
-      }
-    };
+    let (path_value, library) = open_library(path)?;
     Ok(Self {
       path: path_value,
       library: Some(library),
