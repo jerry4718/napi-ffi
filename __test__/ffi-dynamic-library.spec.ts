@@ -125,6 +125,27 @@ test('getFunction caches signatures consistently', () => {
   }
 });
 
+test('getFunctions uses the same signature cache as getFunction', () => {
+  const lib = new ffi.DynamicLibrary(libraryPath);
+
+  try {
+    const first = lib.getFunctions({
+      add_i32: fixtureSymbols.add_i32,
+    });
+    assert.strictEqual(first.add_i32(20, 22), 42);
+
+    assert.throws(() => {
+      lib.getFunctions({
+        add_i32: { arguments: ['u32', 'u32'], return: 'u32' },
+      });
+    }, /already requested with a different signature/);
+
+    assert.strictEqual(lib.getFunction('add_i32', fixtureSymbols.add_i32).pointer, first.add_i32.pointer);
+  } finally {
+    lib.close();
+  }
+});
+
 test('FFI functions keep their owning library alive', async () => {
   let lib = new ffi.DynamicLibrary(libraryPath);
   const addI32 = lib.getFunction('add_i32', fixtureSymbols.add_i32);
@@ -266,10 +287,17 @@ test('dynamic library APIs validate failures and bad signatures', () => {
       });
     }, /dlsym failed:/);
 
-    assert.strictEqual(lib.getFunction('add_i32', {
-      return: 'pointer',
-      arguments: ['pointer'],
-    }).pointer, lib.getSymbol('add_i32'));
+    {
+      const pointerLib = new ffi.DynamicLibrary(libraryPath);
+      try {
+        assert.strictEqual(pointerLib.getFunction('add_i32', {
+          return: 'pointer',
+          arguments: ['pointer'],
+        }).pointer, pointerLib.getSymbol('add_i32'));
+      } finally {
+        pointerLib.close();
+      }
+    }
 
     assert.throws(() => {
       lib.getFunction('add_i32', { return: 'i32\0bad', arguments: [] });

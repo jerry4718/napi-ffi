@@ -1,8 +1,6 @@
-use std::alloc::{alloc, dealloc, Layout};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::c_void;
-use std::ptr::NonNull;
 
 use libffi::middle::{Arg, Closure, CodePtr, Ret};
 #[cfg(unix)]
@@ -14,100 +12,9 @@ use napi::bindgen_prelude::*;
 use napi::Env;
 use napi_derive::napi;
 
-use crate::signature::{compile_signature, CompiledSignature, CompiledTarget};
-use crate::targets::{FormalizedStorageScope, ToFfiContext};
-
-struct RawStorage {
-  pointer: NonNull<u8>,
-  layout: Layout,
-}
-
-impl RawStorage {
-  fn new(layout: Layout) -> Result<Self> {
-    let pointer = if layout.size() == 0 {
-      NonNull::dangling()
-    } else {
-      let raw = unsafe { alloc(layout) };
-      NonNull::new(raw)
-        .ok_or_else(|| Error::new(Status::GenericFailure, "Allocation failed".to_owned()))?
-    };
-    Ok(Self { pointer, layout })
-  }
-
-  fn as_mut_ptr(&self) -> *mut u8 {
-    self.pointer.as_ptr()
-  }
-}
-
-impl Drop for RawStorage {
-  fn drop(&mut self) {
-    if self.layout.size() != 0 {
-      unsafe { dealloc(self.pointer.as_ptr(), self.layout) };
-    }
-  }
-}
-
-struct PreparedFunctionArg<'a> {
-  target: &'a CompiledTarget,
-  storage: RawStorage,
-  scope: FormalizedStorageScope,
-}
-
-impl<'a> PreparedFunctionArg<'a> {
-  fn new(target: &'a CompiledTarget) -> Result<Self> {
-    Ok(Self {
-      target,
-      storage: RawStorage::new(target.ops.function_arg_layout)?,
-      scope: FormalizedStorageScope::new(),
-    })
-  }
-
-  fn as_ptr(&self) -> *mut u8 {
-    self.storage.as_mut_ptr()
-  }
-
-  fn scope_mut(&mut self) -> &mut FormalizedStorageScope {
-    &mut self.scope
-  }
-
-  unsafe fn as_arg(&self) -> Arg<'_> {
-    unsafe { (self.target.ops.function_arg_as_ffi_arg)(self.storage.as_mut_ptr()) }
-  }
-}
-
-struct PreparedCallbackReturn<'a> {
-  target: &'a CompiledTarget,
-  storage: RawStorage,
-  scope: FormalizedStorageScope,
-}
-
-impl<'a> PreparedCallbackReturn<'a> {
-  fn new(target: &'a CompiledTarget) -> Result<Self> {
-    Ok(Self {
-      target,
-      storage: RawStorage::new(target.ops.callback_return_layout)?,
-      scope: FormalizedStorageScope::new(),
-    })
-  }
-
-  fn as_mut_ptr(&self) -> *mut u8 {
-    self.storage.as_mut_ptr()
-  }
-
-  fn scope_mut(&mut self) -> &mut FormalizedStorageScope {
-    &mut self.scope
-  }
-
-  unsafe fn copy_into_result(&self, result: &mut *mut c_void) {
-    let value_ptr = unsafe { (self.target.ops.callback_return_ptr)(self.storage.as_mut_ptr()) };
-    let copy_size = self.target.ops.callback_return_copy_size;
-    if copy_size != 0 {
-      let src = value_ptr.cast::<u8>();
-      let dst = (result as *mut *mut c_void).cast::<u8>();
-      unsafe { std::ptr::copy_nonoverlapping(src, dst, copy_size) };
-    }
-  }
-}
+use crate::signature::{compile_signature, CompiledSignature};
+use crate::storage::{PreparedCallbackReturn, PreparedFunctionArg, RawStorage};
+use crate::targets::ToFfiContext;
 
 struct FunctionBinding {
   pointer: usize,
@@ -332,6 +239,23 @@ fn validate_callback_signature(signature: &CompiledSignature) -> Result<()> {
   Ok(())
 }
 
+fn signatures_match(left: &CompiledSignature, right: &CompiledSignature) -> bool {
+  left.ret.type_name == right.ret.type_name
+    && left.args.len() == right.args.len()
+    && left
+      .args
+      .iter()
+      .zip(&right.args)
+      .all(|(left, right)| left.type_name == right.type_name)
+}
+
+fn signature_conflict(symbol: &str) -> Error {
+  Error::new(
+    Status::InvalidArg,
+    format!("Function '{symbol}' was already requested with a different signature"),
+  )
+}
+
 fn callback_pointer_from_closure(closure: &Closure<'_>) -> Result<BigInt> {
   let code_ptr = CodePtr::from_fun(*closure.code_ptr());
   let raw = code_ptr.as_mut_ptr() as usize;
@@ -413,6 +337,9 @@ impl DynamicLibrary {
     let pointer = {
       let mut cache = self.functions.borrow_mut();
       if let Some(existing) = cache.get(&symbol) {
+        if !signatures_match(&existing.signature, &compiled) {
+          return Err(signature_conflict(&symbol));
+        }
         existing.pointer
       } else {
         let library = self.library()?;
@@ -615,7 +542,12 @@ impl DynamicLibrary {
         .signature
         .cif
         .call_return_into(CodePtr(pointer as *mut _), &ffi_args, ret);
-      (binding.signature.ret.ops.from_ffi)(env, return_storage.as_mut_ptr().cast())
+      let return_ptr = if return_layout.size() == 0 {
+        std::ptr::null()
+      } else {
+        return_storage.as_mut_ptr().cast()
+      };
+      (binding.signature.ret.ops.from_ffi)(env, return_ptr)
     }
   }
 

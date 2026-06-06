@@ -3,6 +3,7 @@
 mod dynamic_library;
 mod memory;
 mod signature;
+mod storage;
 mod targets;
 mod types;
 mod value_helpers;
