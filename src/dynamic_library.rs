@@ -14,7 +14,7 @@ use napi::bindgen_prelude::*;
 use napi::Env;
 use napi_derive::napi;
 
-use crate::signature::{compile_signature, CompiledSignature};
+use crate::signature::{compile_signature, CompiledSignature, CompiledTarget};
 use crate::targets::FormalizedStorageScope;
 
 struct RawStorage {
@@ -48,16 +48,16 @@ impl Drop for RawStorage {
 }
 
 struct PreparedFunctionArg<'a> {
-  target: &'a dyn crate::targets::TypedTarget,
+  target: &'a CompiledTarget,
   storage: RawStorage,
   scope: FormalizedStorageScope,
 }
 
 impl<'a> PreparedFunctionArg<'a> {
-  fn new(target: &'a dyn crate::targets::TypedTarget) -> Result<Self> {
+  fn new(target: &'a CompiledTarget) -> Result<Self> {
     Ok(Self {
       target,
-      storage: RawStorage::new(target.function_arg_layout())?,
+      storage: RawStorage::new((target.ops.function_arg_layout)())?,
       scope: FormalizedStorageScope::new(),
     })
   }
@@ -71,25 +71,21 @@ impl<'a> PreparedFunctionArg<'a> {
   }
 
   unsafe fn as_arg(&self) -> Arg<'_> {
-    unsafe {
-      self
-        .target
-        .function_arg_as_ffi_arg(self.storage.as_mut_ptr())
-    }
+    unsafe { (self.target.ops.function_arg_as_ffi_arg)(self.storage.as_mut_ptr()) }
   }
 }
 
 struct PreparedCallbackReturn<'a> {
-  target: &'a dyn crate::targets::TypedTarget,
+  target: &'a CompiledTarget,
   storage: RawStorage,
   scope: FormalizedStorageScope,
 }
 
 impl<'a> PreparedCallbackReturn<'a> {
-  fn new(target: &'a dyn crate::targets::TypedTarget) -> Result<Self> {
+  fn new(target: &'a CompiledTarget) -> Result<Self> {
     Ok(Self {
       target,
-      storage: RawStorage::new(target.callback_return_layout())?,
+      storage: RawStorage::new((target.ops.callback_return_layout)())?,
       scope: FormalizedStorageScope::new(),
     })
   }
@@ -103,8 +99,8 @@ impl<'a> PreparedCallbackReturn<'a> {
   }
 
   unsafe fn copy_into_result(&self, result: &mut *mut c_void) {
-    let value_ptr = unsafe { self.target.callback_return_ptr(self.storage.as_mut_ptr()) };
-    let copy_size = self.target.callback_return_copy_size();
+    let value_ptr = unsafe { (self.target.ops.callback_return_ptr)(self.storage.as_mut_ptr()) };
+    let copy_size = (self.target.ops.callback_return_copy_size)();
     if copy_size != 0 {
       let src = value_ptr.cast::<u8>();
       let dst = (result as *mut *mut c_void).cast::<u8>();
@@ -182,7 +178,7 @@ impl CallbackContext {
       std::ptr::write_bytes(
         (result as *mut *mut c_void).cast::<u8>(),
         0,
-        self.signature.ret.function_arg_layout().size(),
+        (self.signature.ret.ops.function_arg_layout)().size(),
       )
     };
   }
@@ -229,7 +225,7 @@ impl CallbackContext {
       .enumerate()
       .map(|(index, target)| {
         let arg_ptr = unsafe { *args.add(index) };
-        unsafe { target.formalize_callback_arg(&env, arg_ptr, index) }
+        unsafe { (target.ops.formalize_callback_arg)(&env, arg_ptr, index) }
       })
       .collect::<Result<Vec<_>>>()?;
 
@@ -263,14 +259,11 @@ impl CallbackContext {
     {
       abort_callback("Callbacks cannot return promises")
     }
-    let mut prepared = PreparedCallbackReturn::new(self.signature.ret.as_ref())?;
+    let mut prepared = PreparedCallbackReturn::new(&self.signature.ret)?;
     unsafe {
       let storage = prepared.as_mut_ptr();
       let scope = prepared.scope_mut();
-      self
-        .signature
-        .ret
-        .formalize_callback_return(&env, returned, storage, scope)?;
+      (self.signature.ret.ops.formalize_callback_return)(&env, returned, storage, scope)?;
       prepared.copy_into_result(result);
     }
     Ok(())
@@ -332,7 +325,7 @@ fn callback_not_found() -> Error {
 }
 
 fn validate_callback_signature(signature: &CompiledSignature) -> Result<()> {
-  if signature.ret.type_name() == "string" {
+  if signature.ret.type_name == "string" {
     return Err(Error::new(
       Status::InvalidArg,
       "Callback result type cannot be string; use pointer and manage the returned memory explicitly"
@@ -597,11 +590,11 @@ impl DynamicLibrary {
       .zip(values)
       .enumerate()
       .map(|(index, (target, value))| {
-        let mut prepared = PreparedFunctionArg::new(target.as_ref())?;
+        let mut prepared = PreparedFunctionArg::new(target)?;
         unsafe {
           let storage = prepared.as_ptr();
           let scope = prepared.scope_mut();
-          target.formalize_function_arg(env, value, index, storage, scope)?
+          (target.ops.formalize_function_arg)(env, value, index, storage, scope)?
         };
         Ok(prepared)
       })
@@ -612,7 +605,7 @@ impl DynamicLibrary {
       .map(|prepared| unsafe { prepared.as_arg() })
       .collect::<Vec<Arg<'_>>>();
 
-    let return_layout = binding.signature.ret.function_return_layout();
+    let return_layout = (binding.signature.ret.ops.function_return_layout)();
     let return_storage = RawStorage::new(return_layout)?;
     let ret = if return_layout.size() == 0 {
       Ret::void()
@@ -625,10 +618,7 @@ impl DynamicLibrary {
         .signature
         .cif
         .call_return_into(CodePtr(pointer as *mut _), &ffi_args, ret);
-      binding
-        .signature
-        .ret
-        .formalize_function_return(env, return_storage.as_mut_ptr())
+      (binding.signature.ret.ops.formalize_function_return)(env, return_storage.as_mut_ptr())
     }
   }
 
