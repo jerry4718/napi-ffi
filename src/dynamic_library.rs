@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr::NonNull;
 
-use libffi::middle::{Arg, Closure, CodePtr};
+use libffi::middle::{Arg, Closure, CodePtr, Ret};
 #[cfg(unix)]
 use libloading::os::unix::Library as UnixLibrary;
 #[cfg(windows)]
@@ -632,13 +632,23 @@ impl DynamicLibrary {
       .map(|prepared| unsafe { prepared.as_arg() })
       .collect::<Vec<Arg<'_>>>();
 
+    let return_layout = binding.signature.ret.function_return_layout();
+    let return_storage = RawStorage::new(return_layout)?;
+    let ret = if return_layout.size() == 0 {
+      Ret::void()
+    } else {
+      unsafe { Ret::new(&mut *return_storage.as_mut_ptr()) }
+    };
+
     unsafe {
-      binding.signature.ret.formalize_function_return(
-        env,
-        &binding.signature.cif,
-        CodePtr(pointer as *mut _),
-        &ffi_args,
-      )
+      binding
+        .signature
+        .cif
+        .call_return_into(CodePtr(pointer as *mut _), &ffi_args, ret);
+      binding
+        .signature
+        .ret
+        .formalize_function_return(env, return_storage.as_mut_ptr())
     }
   }
 

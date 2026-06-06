@@ -2,7 +2,7 @@ use std::alloc::Layout;
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::ptr;
 
-use libffi::middle::{Arg, Cif, CodePtr, Type as FFIType};
+use libffi::middle::{Arg, Type as FFIType};
 use napi::bindgen_prelude::i64n;
 use napi::bindgen_prelude::*;
 use napi::Env;
@@ -27,12 +27,12 @@ pub trait TypedTarget: Send + Sync + 'static {
 
   unsafe fn drop_function_arg(&self, storage: *mut u8);
 
+  fn function_return_layout(&self) -> Layout;
+
   unsafe fn formalize_function_return<'env>(
     &self,
     env: &'env Env,
-    cif: &Cif,
-    fn_ptr: CodePtr,
-    args: &[Arg<'_>],
+    storage: *const u8,
   ) -> Result<Unknown<'env>>;
 
   unsafe fn formalize_callback_arg<'env>(
@@ -302,14 +302,16 @@ macro_rules! numeric_target {
 
       unsafe fn drop_function_arg(&self, _storage: *mut u8) {}
 
+      fn function_return_layout(&self) -> Layout {
+        Layout::new::<$rust_ty>()
+      }
+
       unsafe fn formalize_function_return<'env>(
         &self,
         $env_name: &'env Env,
-        cif: &Cif,
-        fn_ptr: CodePtr,
-        args: &[Arg<'_>],
+        storage: *const u8,
       ) -> Result<Unknown<'env>> {
-        let $val_name: $rust_ty = unsafe { cif.call(fn_ptr, args) };
+        let $val_name: $rust_ty = read_scalar!(storage, $rust_ty);
         let result = $to_js;
         Ok(result)
       }
@@ -488,14 +490,16 @@ impl TypedTarget for PointerTarget {
     unsafe { ptr::drop_in_place(storage.cast::<PointerArgStorage>()) };
   }
 
+  fn function_return_layout(&self) -> Layout {
+    Layout::new::<*mut c_void>()
+  }
+
   unsafe fn formalize_function_return<'env>(
     &self,
     env: &'env Env,
-    cif: &Cif,
-    fn_ptr: CodePtr,
-    args: &[Arg<'_>],
+    storage: *const u8,
   ) -> Result<Unknown<'env>> {
-    let value: *mut c_void = unsafe { cif.call(fn_ptr, args) };
+    let value = read_scalar!(storage, *mut c_void);
     BigInt::from(value as usize as u64).into_unknown(env)
   }
 
@@ -600,14 +604,16 @@ impl TypedTarget for StringTarget {
     unsafe { ptr::drop_in_place(storage.cast::<CStringArgStorage>()) };
   }
 
+  fn function_return_layout(&self) -> Layout {
+    Layout::new::<*const c_char>()
+  }
+
   unsafe fn formalize_function_return<'env>(
     &self,
     env: &'env Env,
-    cif: &Cif,
-    fn_ptr: CodePtr,
-    args: &[Arg<'_>],
+    storage: *const u8,
   ) -> Result<Unknown<'env>> {
-    let pointer: *const c_char = unsafe { cif.call(fn_ptr, args) };
+    let pointer = read_scalar!(storage, *const c_char);
     if pointer.is_null() {
       return ().into_unknown(env);
     }
@@ -731,14 +737,16 @@ macro_rules! pointer_alias_target {
         PointerTarget.drop_function_arg(storage)
       }
 
+      fn function_return_layout(&self) -> Layout {
+        PointerTarget.function_return_layout()
+      }
+
       unsafe fn formalize_function_return<'env>(
         &self,
         env: &'env Env,
-        cif: &Cif,
-        fn_ptr: CodePtr,
-        args: &[Arg<'_>],
+        storage: *const u8,
       ) -> Result<Unknown<'env>> {
-        PointerTarget.formalize_function_return(env, cif, fn_ptr, args)
+        PointerTarget.formalize_function_return(env, storage)
       }
 
       unsafe fn formalize_callback_arg<'env>(
@@ -811,14 +819,15 @@ impl TypedTarget for VoidTarget {
 
   unsafe fn drop_function_arg(&self, _storage: *mut u8) {}
 
+  fn function_return_layout(&self) -> Layout {
+    Layout::new::<()>()
+  }
+
   unsafe fn formalize_function_return<'env>(
     &self,
     env: &'env Env,
-    cif: &Cif,
-    fn_ptr: CodePtr,
-    args: &[Arg<'_>],
+    _storage: *const u8,
   ) -> Result<Unknown<'env>> {
-    let _: () = unsafe { cif.call(fn_ptr, args) };
     ().into_unknown(env)
   }
 
