@@ -31,7 +31,7 @@ fn parse_target(type_name: &str) -> Result<Box<dyn TypedTarget>> {
   match type_name {
     "void" => Ok(Box::new(VoidTarget)),
     "i8" | "int8" => Ok(Box::new(I8Target)),
-    "bool" | "u8" | "uint8" => Ok(Box::new(U8Target)),
+    "u8" | "uint8" | "bool" => Ok(Box::new(U8Target)),
     "char" => {
       if std::ffi::c_char::MIN < 0 {
         Ok(Box::new(I8Target))
