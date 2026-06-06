@@ -15,11 +15,11 @@ use napi::Env;
 use napi_derive::napi;
 
 use crate::signature::{compile_signature, CompiledSignature};
+use crate::targets::FormalizedStorageScope;
 
 struct RawStorage {
   pointer: NonNull<u8>,
   layout: Layout,
-  initialized: bool,
 }
 
 impl RawStorage {
@@ -31,23 +31,11 @@ impl RawStorage {
       NonNull::new(raw)
         .ok_or_else(|| Error::new(Status::GenericFailure, "Allocation failed".to_owned()))?
     };
-    Ok(Self {
-      pointer,
-      layout,
-      initialized: false,
-    })
+    Ok(Self { pointer, layout })
   }
 
   fn as_mut_ptr(&self) -> *mut u8 {
     self.pointer.as_ptr()
-  }
-
-  fn mark_initialized(&mut self) {
-    self.initialized = true;
-  }
-
-  fn is_initialized(&self) -> bool {
-    self.initialized
   }
 }
 
@@ -62,6 +50,7 @@ impl Drop for RawStorage {
 struct PreparedFunctionArg<'a> {
   target: &'a dyn crate::targets::TypedTarget,
   storage: RawStorage,
+  scope: FormalizedStorageScope,
 }
 
 impl<'a> PreparedFunctionArg<'a> {
@@ -69,11 +58,16 @@ impl<'a> PreparedFunctionArg<'a> {
     Ok(Self {
       target,
       storage: RawStorage::new(target.function_arg_layout())?,
+      scope: FormalizedStorageScope::new(),
     })
   }
 
   fn as_ptr(&self) -> *mut u8 {
     self.storage.as_mut_ptr()
+  }
+
+  fn scope_mut(&mut self) -> &mut FormalizedStorageScope {
+    &mut self.scope
   }
 
   unsafe fn as_arg(&self) -> Arg<'_> {
@@ -83,23 +77,12 @@ impl<'a> PreparedFunctionArg<'a> {
         .function_arg_as_ffi_arg(self.storage.as_mut_ptr())
     }
   }
-
-  fn mark_initialized(&mut self) {
-    self.storage.mark_initialized();
-  }
-}
-
-impl Drop for PreparedFunctionArg<'_> {
-  fn drop(&mut self) {
-    if self.storage.is_initialized() {
-      unsafe { self.target.drop_function_arg(self.storage.as_mut_ptr()) };
-    }
-  }
 }
 
 struct PreparedCallbackReturn<'a> {
   target: &'a dyn crate::targets::TypedTarget,
   storage: RawStorage,
+  scope: FormalizedStorageScope,
 }
 
 impl<'a> PreparedCallbackReturn<'a> {
@@ -107,11 +90,16 @@ impl<'a> PreparedCallbackReturn<'a> {
     Ok(Self {
       target,
       storage: RawStorage::new(target.callback_return_layout())?,
+      scope: FormalizedStorageScope::new(),
     })
   }
 
   fn as_mut_ptr(&self) -> *mut u8 {
     self.storage.as_mut_ptr()
+  }
+
+  fn scope_mut(&mut self) -> &mut FormalizedStorageScope {
+    &mut self.scope
   }
 
   unsafe fn copy_into_result(&self, result: &mut *mut c_void) {
@@ -121,18 +109,6 @@ impl<'a> PreparedCallbackReturn<'a> {
       let src = value_ptr.cast::<u8>();
       let dst = (result as *mut *mut c_void).cast::<u8>();
       unsafe { std::ptr::copy_nonoverlapping(src, dst, copy_size) };
-    }
-  }
-
-  fn mark_initialized(&mut self) {
-    self.storage.mark_initialized();
-  }
-}
-
-impl Drop for PreparedCallbackReturn<'_> {
-  fn drop(&mut self) {
-    if self.storage.is_initialized() {
-      unsafe { self.target.drop_callback_return(self.storage.as_mut_ptr()) };
     }
   }
 }
@@ -289,11 +265,12 @@ impl CallbackContext {
     }
     let mut prepared = PreparedCallbackReturn::new(self.signature.ret.as_ref())?;
     unsafe {
+      let storage = prepared.as_mut_ptr();
+      let scope = prepared.scope_mut();
       self
         .signature
         .ret
-        .formalize_callback_return(&env, returned, prepared.as_mut_ptr())?;
-      prepared.mark_initialized();
+        .formalize_callback_return(&env, returned, storage, scope)?;
       prepared.copy_into_result(result);
     }
     Ok(())
@@ -621,8 +598,11 @@ impl DynamicLibrary {
       .enumerate()
       .map(|(index, (target, value))| {
         let mut prepared = PreparedFunctionArg::new(target.as_ref())?;
-        unsafe { target.formalize_function_arg(env, value, index, prepared.as_ptr())? };
-        prepared.mark_initialized();
+        unsafe {
+          let storage = prepared.as_ptr();
+          let scope = prepared.scope_mut();
+          target.formalize_function_arg(env, value, index, storage, scope)?
+        };
         Ok(prepared)
       })
       .collect::<Result<Vec<_>>>()?;

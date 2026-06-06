@@ -9,6 +9,24 @@ use napi::Env;
 
 use crate::value_helpers::raw_bytes_pointer;
 
+pub struct FormalizedStorageScope {
+  c_strings: Vec<CString>,
+}
+
+impl FormalizedStorageScope {
+  pub fn new() -> Self {
+    Self {
+      c_strings: Vec::new(),
+    }
+  }
+
+  fn keep_c_string(&mut self, c_string: CString) -> *const c_char {
+    let pointer = c_string.as_ptr();
+    self.c_strings.push(c_string);
+    pointer
+  }
+}
+
 pub trait TypedTarget: Send + Sync + 'static {
   fn type_name(&self) -> &'static str;
   fn ffi_type(&self) -> FFIType;
@@ -21,11 +39,10 @@ pub trait TypedTarget: Send + Sync + 'static {
     value: Unknown<'env>,
     index: usize,
     storage: *mut u8,
+    scope: &mut FormalizedStorageScope,
   ) -> Result<()>;
 
   unsafe fn function_arg_as_ffi_arg<'a>(&self, storage: *const u8) -> Arg<'a>;
-
-  unsafe fn drop_function_arg(&self, storage: *mut u8);
 
   fn function_return_layout(&self) -> Layout;
 
@@ -53,11 +70,10 @@ pub trait TypedTarget: Send + Sync + 'static {
     env: &'env Env,
     value: Unknown<'env>,
     storage: *mut u8,
+    scope: &mut FormalizedStorageScope,
   ) -> Result<()>;
 
   unsafe fn callback_return_ptr(&self, storage: *const u8) -> *const c_void;
-
-  unsafe fn drop_callback_return(&self, storage: *mut u8);
 }
 
 #[inline]
@@ -290,6 +306,7 @@ macro_rules! numeric_target {
         $val_name: Unknown<'env>,
         $idx_name: usize,
         storage: *mut u8,
+        _scope: &mut FormalizedStorageScope,
       ) -> Result<()> {
         let parsed: $rust_ty = $arg_check;
         unsafe { ptr::write(storage.cast::<$rust_ty>(), parsed) };
@@ -299,8 +316,6 @@ macro_rules! numeric_target {
       unsafe fn function_arg_as_ffi_arg<'a>(&self, storage: *const u8) -> Arg<'a> {
         Arg::new(unsafe { &*storage.cast::<$rust_ty>() })
       }
-
-      unsafe fn drop_function_arg(&self, _storage: *mut u8) {}
 
       fn function_return_layout(&self) -> Layout {
         Layout::new::<$rust_ty>()
@@ -336,6 +351,7 @@ macro_rules! numeric_target {
         _env: &'env Env,
         $val_name: Unknown<'env>,
         storage: *mut u8,
+        _scope: &mut FormalizedStorageScope,
       ) -> Result<()> {
         let parsed: $rust_ty = $callback_check;
         unsafe { ptr::write_unaligned(storage.cast::<$rust_ty>(), parsed) };
@@ -345,8 +361,6 @@ macro_rules! numeric_target {
       unsafe fn callback_return_ptr(&self, storage: *const u8) -> *const c_void {
         storage.cast()
       }
-
-      unsafe fn drop_callback_return(&self, _storage: *mut u8) {}
     }
   };
 }
@@ -432,7 +446,6 @@ numeric_target!(
 #[repr(C)]
 struct PointerArgStorage {
   pointer: *mut c_void,
-  owned_c_string: Option<CString>,
 }
 
 pub struct PointerTarget;
@@ -456,38 +469,20 @@ impl TypedTarget for PointerTarget {
     value: Unknown<'env>,
     index: usize,
     storage: *mut u8,
+    scope: &mut FormalizedStorageScope,
   ) -> Result<()> {
     let storage = storage.cast::<PointerArgStorage>();
-    match pointer_argument_from_unknown(value, index)? {
-      PointerArgumentCategory::String(c_string) => unsafe {
-        ptr::write(
-          storage,
-          PointerArgStorage {
-            pointer: c_string.as_ptr() as *mut c_void,
-            owned_c_string: Some(c_string),
-          },
-        )
-      },
-      PointerArgumentCategory::Regular(pointer) => unsafe {
-        ptr::write(
-          storage,
-          PointerArgStorage {
-            pointer,
-            owned_c_string: None,
-          },
-        )
-      },
-    }
+    let pointer = match pointer_argument_from_unknown(value, index)? {
+      PointerArgumentCategory::String(c_string) => scope.keep_c_string(c_string) as *mut c_void,
+      PointerArgumentCategory::Regular(pointer) => pointer,
+    };
+    unsafe { ptr::write(storage, PointerArgStorage { pointer }) };
     Ok(())
   }
 
   unsafe fn function_arg_as_ffi_arg<'a>(&self, storage: *const u8) -> Arg<'a> {
     let storage = unsafe { &*storage.cast::<PointerArgStorage>() };
     Arg::new(&storage.pointer)
-  }
-
-  unsafe fn drop_function_arg(&self, storage: *mut u8) {
-    unsafe { ptr::drop_in_place(storage.cast::<PointerArgStorage>()) };
   }
 
   fn function_return_layout(&self) -> Layout {
@@ -521,6 +516,7 @@ impl TypedTarget for PointerTarget {
     _env: &'env Env,
     value: Unknown<'env>,
     storage: *mut u8,
+    _scope: &mut FormalizedStorageScope,
   ) -> Result<()> {
     let pointer = match value.get_type() {
       Ok(ValueType::Null | ValueType::Undefined) => ptr::null_mut(),
@@ -533,14 +529,11 @@ impl TypedTarget for PointerTarget {
   unsafe fn callback_return_ptr(&self, storage: *const u8) -> *const c_void {
     storage.cast()
   }
-
-  unsafe fn drop_callback_return(&self, _storage: *mut u8) {}
 }
 
 #[repr(C)]
 struct CStringArgStorage {
   pointer: *const c_char,
-  owned: Option<CString>,
 }
 
 pub struct StringTarget;
@@ -564,44 +557,26 @@ impl TypedTarget for StringTarget {
     value: Unknown<'env>,
     index: usize,
     storage: *mut u8,
+    scope: &mut FormalizedStorageScope,
   ) -> Result<()> {
     let storage = storage.cast::<CStringArgStorage>();
-    match value.get_type()? {
+    let pointer = match value.get_type()? {
       ValueType::String => {
         let string = cast_string(value)?;
         let c_string = CString::new(string).map_err(|_| {
           invalid_arg_value(format!("Argument {index} must not contain null bytes"))
         })?;
-        unsafe {
-          ptr::write(
-            storage,
-            CStringArgStorage {
-              pointer: c_string.as_ptr(),
-              owned: Some(c_string),
-            },
-          )
-        };
+        scope.keep_c_string(c_string)
       }
-      _ => unsafe {
-        ptr::write(
-          storage,
-          CStringArgStorage {
-            pointer: raw_pointer_from_unknown(value, index)? as *const c_char,
-            owned: None,
-          },
-        )
-      },
-    }
+      _ => raw_pointer_from_unknown(value, index)? as *const c_char,
+    };
+    unsafe { ptr::write(storage, CStringArgStorage { pointer }) };
     Ok(())
   }
 
   unsafe fn function_arg_as_ffi_arg<'a>(&self, storage: *const u8) -> Arg<'a> {
     let storage = unsafe { &*storage.cast::<CStringArgStorage>() };
     Arg::new(&storage.pointer)
-  }
-
-  unsafe fn drop_function_arg(&self, storage: *mut u8) {
-    unsafe { ptr::drop_in_place(storage.cast::<CStringArgStorage>()) };
   }
 
   fn function_return_layout(&self) -> Layout {
@@ -654,51 +629,26 @@ impl TypedTarget for StringTarget {
     _env: &'env Env,
     value: Unknown<'env>,
     storage: *mut u8,
+    scope: &mut FormalizedStorageScope,
   ) -> Result<()> {
     let storage = storage.cast::<CStringArgStorage>();
-    match value.get_type() {
-      Ok(ValueType::Null | ValueType::Undefined) => unsafe {
-        ptr::write(
-          storage,
-          CStringArgStorage {
-            pointer: ptr::null(),
-            owned: None,
-          },
-        )
-      },
+    let pointer = match value.get_type() {
+      Ok(ValueType::Null | ValueType::Undefined) => ptr::null(),
       Ok(ValueType::String) => {
         let string = cast_string(value).map_err(|_| invalid_callback_return())?;
         let c_string = CString::new(string).map_err(|_| invalid_callback_return())?;
-        unsafe {
-          ptr::write(
-            storage,
-            CStringArgStorage {
-              pointer: c_string.as_ptr(),
-              owned: Some(c_string),
-            },
-          )
-        };
+        scope.keep_c_string(c_string)
       }
-      _ => unsafe {
-        ptr::write(
-          storage,
-          CStringArgStorage {
-            pointer: raw_pointer_from_unknown(value, 0).map_err(|_| invalid_callback_return())?
-              as *const c_char,
-            owned: None,
-          },
-        )
-      },
-    }
+      _ => {
+        raw_pointer_from_unknown(value, 0).map_err(|_| invalid_callback_return())? as *const c_char
+      }
+    };
+    unsafe { ptr::write(storage, CStringArgStorage { pointer }) };
     Ok(())
   }
 
   unsafe fn callback_return_ptr(&self, storage: *const u8) -> *const c_void {
     unsafe { ptr::addr_of!((*storage.cast::<CStringArgStorage>()).pointer).cast() }
-  }
-
-  unsafe fn drop_callback_return(&self, storage: *mut u8) {
-    unsafe { ptr::drop_in_place(storage.cast::<CStringArgStorage>()) };
   }
 }
 
@@ -725,16 +675,13 @@ macro_rules! pointer_alias_target {
         value: Unknown<'env>,
         index: usize,
         storage: *mut u8,
+        scope: &mut FormalizedStorageScope,
       ) -> Result<()> {
-        PointerTarget.formalize_function_arg(env, value, index, storage)
+        PointerTarget.formalize_function_arg(env, value, index, storage, scope)
       }
 
       unsafe fn function_arg_as_ffi_arg<'a>(&self, storage: *const u8) -> Arg<'a> {
         PointerTarget.function_arg_as_ffi_arg(storage)
-      }
-
-      unsafe fn drop_function_arg(&self, storage: *mut u8) {
-        PointerTarget.drop_function_arg(storage)
       }
 
       fn function_return_layout(&self) -> Layout {
@@ -767,16 +714,13 @@ macro_rules! pointer_alias_target {
         env: &'env Env,
         value: Unknown<'env>,
         storage: *mut u8,
+        scope: &mut FormalizedStorageScope,
       ) -> Result<()> {
-        PointerTarget.formalize_callback_return(env, value, storage)
+        PointerTarget.formalize_callback_return(env, value, storage, scope)
       }
 
       unsafe fn callback_return_ptr(&self, storage: *const u8) -> *const c_void {
         PointerTarget.callback_return_ptr(storage)
-      }
-
-      unsafe fn drop_callback_return(&self, storage: *mut u8) {
-        PointerTarget.drop_callback_return(storage)
       }
     }
   };
@@ -807,6 +751,7 @@ impl TypedTarget for VoidTarget {
     _value: Unknown<'env>,
     index: usize,
     _storage: *mut u8,
+    _scope: &mut FormalizedStorageScope,
   ) -> Result<()> {
     Err(invalid_arg_value(format!(
       "Argument {index} cannot use void as an argument type"
@@ -816,8 +761,6 @@ impl TypedTarget for VoidTarget {
   unsafe fn function_arg_as_ffi_arg<'a>(&self, _storage: *const u8) -> Arg<'a> {
     unreachable!("void cannot be used as a function argument")
   }
-
-  unsafe fn drop_function_arg(&self, _storage: *mut u8) {}
 
   fn function_return_layout(&self) -> Layout {
     Layout::new::<()>()
@@ -852,6 +795,7 @@ impl TypedTarget for VoidTarget {
     _env: &'env Env,
     _value: Unknown<'env>,
     _storage: *mut u8,
+    _scope: &mut FormalizedStorageScope,
   ) -> Result<()> {
     Ok(())
   }
@@ -859,6 +803,4 @@ impl TypedTarget for VoidTarget {
   unsafe fn callback_return_ptr(&self, _storage: *const u8) -> *const c_void {
     ptr::null()
   }
-
-  unsafe fn drop_callback_return(&self, _storage: *mut u8) {}
 }
