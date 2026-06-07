@@ -248,9 +248,6 @@ unsafe fn scalar_callback_return_ptr(storage: *const u8) -> *const c_void {
 
 macro_rules! numeric_type_ops {
   (
-    $ops_name:ident,
-    $to_ffi:ident,
-    $from_ffi:ident,
     $rust_ty:ty,
     $env_name:ident,
     $val_name:ident,
@@ -260,46 +257,31 @@ macro_rules! numeric_type_ops {
     $to_js:expr
     $(,)?
   ) => {
-    unsafe fn $to_ffi<'env>(
-      $val_name: Unknown<'env>,
-      storage: *mut u8,
-      _scope: &mut FormalizedStorageScope,
-      context: ToFfiContext,
-    ) -> Result<()> {
-      let parsed: $rust_ty = match context {
-        ToFfiContext::CallArg { index: $idx_name } => $arg_check,
-        ToFfiContext::CallbackReturn => $callback_check,
-      };
-      unsafe { ptr::write(storage.cast::<$rust_ty>(), parsed) };
-      Ok(())
-    }
-
-    unsafe fn $from_ffi<'env>(
-      $env_name: &'env Env,
-      value_ptr: *const c_void,
-    ) -> Result<Unknown<'env>> {
-      let $val_name: $rust_ty = read_scalar!(value_ptr, $rust_ty);
-      let result = $to_js;
-      Ok(result)
-    }
-
-    pub const $ops_name: TypeOps = TypeOps {
+    TypeOps {
       function_arg_layout: Layout::new::<$rust_ty>(),
-      to_ffi: $to_ffi,
+      to_ffi: |$val_name, storage, _scope, context| {
+        let parsed: $rust_ty = match context {
+          ToFfiContext::CallArg { index: $idx_name } => $arg_check,
+          ToFfiContext::CallbackReturn => $callback_check,
+        };
+        unsafe { ptr::write(storage.cast::<$rust_ty>(), parsed) };
+        Ok(())
+      },
       function_arg_as_ffi_arg: scalar_arg_as_ffi_arg::<$rust_ty>,
       function_return_layout: Layout::new::<$rust_ty>(),
-      from_ffi: $from_ffi,
+      from_ffi: |$env_name, value_ptr| {
+        let $val_name: $rust_ty = read_scalar!(value_ptr, $rust_ty);
+        let result = $to_js;
+        Ok(result)
+      },
       callback_return_layout: Layout::new::<$rust_ty>(),
       callback_return_copy_size: std::mem::size_of::<$rust_ty>(),
       callback_return_ptr: scalar_callback_return_ptr,
-    };
+    }
   };
 }
 
-numeric_type_ops!(
-  I8_OPS,
-  i8_to_ffi,
-  i8_from_ffi,
+pub const I8_OPS: TypeOps = numeric_type_ops!(
   i8,
   env,
   value,
@@ -309,10 +291,7 @@ numeric_type_ops!(
   { i8::into_unknown(value, env)? },
 );
 
-numeric_type_ops!(
-  U8_OPS,
-  u8_to_ffi,
-  u8_from_ffi,
+pub const U8_OPS: TypeOps = numeric_type_ops!(
   u8,
   env,
   value,
@@ -322,10 +301,7 @@ numeric_type_ops!(
   { u8::into_unknown(value, env)? },
 );
 
-numeric_type_ops!(
-  I16_OPS,
-  i16_to_ffi,
-  i16_from_ffi,
+pub const I16_OPS: TypeOps = numeric_type_ops!(
   i16,
   env,
   value,
@@ -335,10 +311,7 @@ numeric_type_ops!(
   { i16::into_unknown(value, env)? },
 );
 
-numeric_type_ops!(
-  U16_OPS,
-  u16_to_ffi,
-  u16_from_ffi,
+pub const U16_OPS: TypeOps = numeric_type_ops!(
   u16,
   env,
   value,
@@ -348,10 +321,7 @@ numeric_type_ops!(
   { u16::into_unknown(value, env)? },
 );
 
-numeric_type_ops!(
-  I32_OPS,
-  i32_to_ffi,
-  i32_from_ffi,
+pub const I32_OPS: TypeOps = numeric_type_ops!(
   i32,
   env,
   value,
@@ -361,10 +331,7 @@ numeric_type_ops!(
   { i32::into_unknown(value, env)? },
 );
 
-numeric_type_ops!(
-  U32_OPS,
-  u32_to_ffi,
-  u32_from_ffi,
+pub const U32_OPS: TypeOps = numeric_type_ops!(
   u32,
   env,
   value,
@@ -374,10 +341,7 @@ numeric_type_ops!(
   { u32::into_unknown(value, env)? },
 );
 
-numeric_type_ops!(
-  I64_OPS,
-  i64_to_ffi,
-  i64_from_ffi,
+pub const I64_OPS: TypeOps = numeric_type_ops!(
   i64,
   env,
   value,
@@ -394,10 +358,7 @@ numeric_type_ops!(
   { i64n(value).into_unknown(env)? },
 );
 
-numeric_type_ops!(
-  U64_OPS,
-  u64_to_ffi,
-  u64_from_ffi,
+pub const U64_OPS: TypeOps = numeric_type_ops!(
   u64,
   env,
   value,
@@ -414,10 +375,7 @@ numeric_type_ops!(
   { u64::into_unknown(value, env)? },
 );
 
-numeric_type_ops!(
-  F32_OPS,
-  f32_to_ffi,
-  f32_from_ffi,
+pub const F32_OPS: TypeOps = numeric_type_ops!(
   f32,
   env,
   value,
@@ -430,10 +388,7 @@ numeric_type_ops!(
   { f32::into_unknown(value, env)? },
 );
 
-numeric_type_ops!(
-  F64_OPS,
-  f64_to_ffi,
-  f64_from_ffi,
+pub const F64_OPS: TypeOps = numeric_type_ops!(
   f64,
   env,
   value,
