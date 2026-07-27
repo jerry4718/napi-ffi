@@ -1,4 +1,6 @@
 .bak
+.idea
+.jcode
 
 ### Created by https://www.gitignore.io
 ### Rust ###
@@ -198,3 +200,5 @@ Temporary Items
 # iCloud generated files
 *.icloud
 *.so
+
+*.dylib
