@@ -1,12 +1,11 @@
-import test from 'ava'
-import { createRequire } from 'node:module'
-const require = createRequire(import.meta.url)
+import test from 'ava';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
 // Flags:  --expose-internals
 const common = require('./common');
 
 const assert = require('node:assert');
 const { endianness } = require('node:os');
-
 
 if (endianness() === 'BE') {
   common.skip('shared-buffer FFI is disabled on big-endian hosts');
@@ -19,12 +18,7 @@ if (endianness() === 'BE') {
 const ffi = require('../index.js');
 const native = require('../native.js');
 const ffiBinding = ffi;
-const {
-  kSbInvokeSlow,
-  kSbArguments,
-  kSbReturn,
-  kSbSharedBuffer,
-} = ffiBinding;
+const { kSbInvokeSlow, kSbArguments, kSbReturn, kSbSharedBuffer } = ffiBinding;
 const rawGetFunctionUnpatched = ffiBinding.DynamicLibrary.prototype.getFunction;
 
 const { libraryPath } = require('./ffi-test-common');
@@ -139,11 +133,14 @@ test('pointer args: fast path (BigInt/null) and slow-path fallback (Buffer/Array
 test('string pointer uses slow-path fallback', () => {
   const { lib, functions } = ffi.dlopen(libraryPath, {
     string_length: { return: 'u64', arguments: ['pointer'] },
+    safe_strlen: { return: 'i32', arguments: ['string'] },
   });
   try {
     assert.strictEqual(functions.string_length('hello'), 5n);
     // strlen(NULL) is UB, so use a NUL-terminated Buffer for the fast path.
     assert.strictEqual(functions.string_length(Buffer.from('world\0')), 5n);
+    assert.strictEqual(functions.safe_strlen('hello'), 5);
+    assert.strictEqual(functions.safe_strlen(null), -1);
   } finally {
     lib.close();
   }
@@ -174,14 +171,11 @@ test('reentrancy across two FFI symbols', () => {
 
   let callDepth = 0;
   let innerResult = -1;
-  const callback = lib.registerCallback(
-    { return: 'i32', arguments: ['i32'] },
-    (x) => {
-      callDepth++;
-      if (callDepth === 1) innerResult = functions.add_i32(x, 100);
-      return x * 2;
-    },
-  );
+  const callback = lib.registerCallback({ return: 'i32', arguments: ['i32'] }, (x) => {
+    callDepth++;
+    if (callDepth === 1) innerResult = functions.add_i32(x, 100);
+    return x * 2;
+  });
 
   try {
     const outer = functions.call_int_callback(callback, 7);
@@ -220,10 +214,10 @@ test('arity 7+ uses the generic rest-params branch', () => {
   });
   try {
     assert.strictEqual(functions.sum_7_i32(1, 2, 3, 4, 5, 6, 7), 28);
-    assert.throws(
-      () => functions.sum_7_i32(1, 2, 3, 4, 5, 6),
-      { code: 'ERR_INVALID_ARG_VALUE', message: /expected 7, got 6/ },
-    );
+    assert.throws(() => functions.sum_7_i32(1, 2, 3, 4, 5, 6), {
+      code: 'ERR_INVALID_ARG_VALUE',
+      message: /expected 7, got 6/,
+    });
   } finally {
     lib.close();
   }
@@ -358,8 +352,7 @@ test('char type picks signed/unsigned range based on host ABI', () => {
 test('SB metadata is Symbol-keyed, attribute-hardened, and not leaked onto the wrapper', () => {
   const rawLib = new ffiBinding.DynamicLibrary(libraryPath);
   try {
-    const rawFn = rawGetFunctionUnpatched.call(
-      rawLib, 'add_i32', { return: 'i32', arguments: ['i32', 'i32'] });
+    const rawFn = rawGetFunctionUnpatched.call(rawLib, 'add_i32', { return: 'i32', arguments: ['i32', 'i32'] });
 
     for (const [name, sym] of [
       ['kSbSharedBuffer', kSbSharedBuffer],
@@ -382,12 +375,13 @@ test('SB metadata is Symbol-keyed, attribute-hardened, and not leaked onto the w
       assert.strictEqual(desc.configurable, false);
       assert.strictEqual(desc.writable, false);
     }
-    assert.strictEqual(
-      Object.getOwnPropertyDescriptor(rawFn, kSbInvokeSlow), undefined);
+    assert.strictEqual(Object.getOwnPropertyDescriptor(rawFn, kSbInvokeSlow), undefined);
 
     // Pointer signature: kSbInvokeSlow must exist (and be hardened).
-    const rawPtrFn = rawGetFunctionUnpatched.call(
-      rawLib, 'identity_pointer', { return: 'pointer', arguments: ['pointer'] });
+    const rawPtrFn = rawGetFunctionUnpatched.call(rawLib, 'identity_pointer', {
+      return: 'pointer',
+      arguments: ['pointer'],
+    });
     const slowDesc = Object.getOwnPropertyDescriptor(rawPtrFn, kSbInvokeSlow);
     assert.ok(slowDesc !== undefined);
     assert.strictEqual(slowDesc.enumerable, false);
@@ -422,9 +416,7 @@ test('pointer fast-path range check respects platform pointer width', () => {
     identity_pointer: { return: 'pointer', arguments: ['pointer'] },
   });
   try {
-    const maxPointer = process.arch === 'ia32' || process.arch === 'arm'
-      ? (1n << 32n) - 1n
-      : (1n << 64n) - 1n;
+    const maxPointer = process.arch === 'ia32' || process.arch === 'arm' ? (1n << 32n) - 1n : (1n << 64n) - 1n;
 
     assert.strictEqual(functions.identity_pointer(0n), 0n);
     assert.strictEqual(functions.identity_pointer(maxPointer), maxPointer);
@@ -441,7 +433,7 @@ test('pointer fast-path range check respects platform pointer width', () => {
   }
 });
 
-test('self-recursive reentrancy: a single function\'s ArrayBuffer survives a nested call', () => {
+test("self-recursive reentrancy: a single function's ArrayBuffer survives a nested call", () => {
   // Stricter invariant than the two-symbol case: `InvokeFunctionSB` must
   // copy args out of the ArrayBuffer to stack before `ffi_call` so a recursive
   // call can reuse the same buffer without clobbering the outer frame.
@@ -544,39 +536,23 @@ test('void-return wrapper at every specialized arity observes side effects', () 
     assert.strictEqual(functions.store_sum_5_i32(1, 2, 4, 8, 16), undefined);
     assert.strictEqual(functions.get_scratch(), 31);
 
-    assert.strictEqual(
-      functions.store_sum_6_i32(1, 2, 4, 8, 16, 32), undefined);
+    assert.strictEqual(functions.store_sum_6_i32(1, 2, 4, 8, 16, 32), undefined);
     assert.strictEqual(functions.get_scratch(), 63);
 
     // 7+ args takes the generic rest-params void branch rather than a
     // per-arity specialization.
-    assert.strictEqual(
-      functions.store_sum_8_i32(1, 2, 4, 8, 16, 32, 64, 128), undefined);
+    assert.strictEqual(functions.store_sum_8_i32(1, 2, 4, 8, 16, 32, 64, 128), undefined);
     assert.strictEqual(functions.get_scratch(), 255);
 
     // Validation still runs on every void-return branch, including the
     // rest-params fallback.
-    assert.throws(
-      () => functions.store_i32(1.5),
-      { code: 'ERR_INVALID_ARG_VALUE' });
-    assert.throws(
-      () => functions.store_sum_2_i32(1.5, 2),
-      { code: 'ERR_INVALID_ARG_VALUE' });
-    assert.throws(
-      () => functions.store_sum_3_i32(1, 1.5, 3),
-      { code: 'ERR_INVALID_ARG_VALUE' });
-    assert.throws(
-      () => functions.store_sum_4_i32(1, 2, 1.5, 4),
-      { code: 'ERR_INVALID_ARG_VALUE' });
-    assert.throws(
-      () => functions.store_sum_5_i32(1, 2, 3, 1.5, 5),
-      { code: 'ERR_INVALID_ARG_VALUE' });
-    assert.throws(
-      () => functions.store_sum_6_i32(1, 2, 3, 4, 5),
-      { code: 'ERR_INVALID_ARG_VALUE' });
-    assert.throws(
-      () => functions.store_sum_8_i32(1, 2, 3, 4, 5, 6, 7, 1.5),
-      { code: 'ERR_INVALID_ARG_VALUE' });
+    assert.throws(() => functions.store_i32(1.5), { code: 'ERR_INVALID_ARG_VALUE' });
+    assert.throws(() => functions.store_sum_2_i32(1.5, 2), { code: 'ERR_INVALID_ARG_VALUE' });
+    assert.throws(() => functions.store_sum_3_i32(1, 1.5, 3), { code: 'ERR_INVALID_ARG_VALUE' });
+    assert.throws(() => functions.store_sum_4_i32(1, 2, 1.5, 4), { code: 'ERR_INVALID_ARG_VALUE' });
+    assert.throws(() => functions.store_sum_5_i32(1, 2, 3, 1.5, 5), { code: 'ERR_INVALID_ARG_VALUE' });
+    assert.throws(() => functions.store_sum_6_i32(1, 2, 3, 4, 5), { code: 'ERR_INVALID_ARG_VALUE' });
+    assert.throws(() => functions.store_sum_8_i32(1, 2, 3, 4, 5, 6, 7, 1.5), { code: 'ERR_INVALID_ARG_VALUE' });
 
     // Wrong arity hits the `throwFFIArgCountError` branch inside each
     // specialization (1..6 and the 7+ rest-params fallback).
@@ -589,12 +565,10 @@ test('void-return wrapper at every specialized arity observes side effects', () 
       ['store_sum_6_i32', 6, [1, 2, 3, 4, 5]],
       ['store_sum_8_i32', 8, [1, 2, 3, 4, 5, 6, 7]],
     ]) {
-      assert.throws(
-        () => functions[name](...badArgs),
-        {
-          code: 'ERR_INVALID_ARG_VALUE',
-          message: new RegExp(`expected ${expected}, got ${badArgs.length}`),
-        });
+      assert.throws(() => functions[name](...badArgs), {
+        code: 'ERR_INVALID_ARG_VALUE',
+        message: new RegExp(`expected ${expected}, got ${badArgs.length}`),
+      });
     }
   } finally {
     lib.close();
@@ -629,12 +603,10 @@ test('value-return wrapper arity mismatch hits every specialized branch', () => 
       ['sum_five_i32', 5, [1, 2, 3, 4]],
       ['sum_6_i32', 6, [1, 2, 3, 4, 5]],
     ]) {
-      assert.throws(
-        () => functions[name](...badArgs),
-        {
-          code: 'ERR_INVALID_ARG_VALUE',
-          message: new RegExp(`expected ${expected}, got ${badArgs.length}`),
-        });
+      assert.throws(() => functions[name](...badArgs), {
+        code: 'ERR_INVALID_ARG_VALUE',
+        message: new RegExp(`expected ${expected}, got ${badArgs.length}`),
+      });
     }
 
     // Sanity-check that a correct call still returns a value at each
@@ -659,18 +631,14 @@ test('pointer-dispatch wrapper rejects wrong-arity calls', () => {
     identity_pointer: { return: 'pointer', arguments: ['pointer'] },
   });
   try {
-    assert.throws(
-      () => functions.identity_pointer(),
-      {
-        code: 'ERR_INVALID_ARG_VALUE',
-        message: /expected 1, got 0/,
-      });
-    assert.throws(
-      () => functions.identity_pointer(0n, 0n),
-      {
-        code: 'ERR_INVALID_ARG_VALUE',
-        message: /expected 1, got 2/,
-      });
+    assert.throws(() => functions.identity_pointer(), {
+      code: 'ERR_INVALID_ARG_VALUE',
+      message: /expected 1, got 0/,
+    });
+    assert.throws(() => functions.identity_pointer(0n, 0n), {
+      code: 'ERR_INVALID_ARG_VALUE',
+      message: /expected 1, got 2/,
+    });
   } finally {
     lib.close();
   }
@@ -716,10 +684,7 @@ test('arity-7+ branch still runs per-arg validation', () => {
     sum_7_i32: { return: 'i32', arguments: ['i32', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32'] },
   });
   try {
-    assert.throws(
-      () => functions.sum_7_i32(1, 2, 3, 1.5, 5, 6, 7),
-      { code: 'ERR_INVALID_ARG_VALUE' },
-    );
+    assert.throws(() => functions.sum_7_i32(1, 2, 3, 1.5, 5, 6, 7), { code: 'ERR_INVALID_ARG_VALUE' });
   } finally {
     lib.close();
   }
@@ -777,10 +742,13 @@ test('lib.getFunctions() with no arguments wraps every cached function', () => {
     // has to be callable from the object returned by `getFunctions()`.
     assert.strictEqual(all.string_length('hello'), 5n);
 
-    assert.deepStrictEqual(
-      Object.keys(all).sort(),
-      ['add_f64', 'add_i32', 'identity_pointer',
-       'mixed_operation', 'string_length']);
+    assert.deepStrictEqual(Object.keys(all).sort(), [
+      'add_f64',
+      'add_i32',
+      'identity_pointer',
+      'mixed_operation',
+      'string_length',
+    ]);
 
     assert.throws(() => all.add_i32(1), { code: 'ERR_INVALID_ARG_VALUE' });
     assert.throws(() => all.add_i32(1.5, 0), { code: 'ERR_INVALID_ARG_VALUE' });
@@ -802,10 +770,7 @@ test('mixed pointer + numeric signature uses the pointer-dispatch wrapper', () =
   });
 
   try {
-    const cb = lib.registerCallback(
-      { return: 'i32', arguments: ['i32'] },
-      (x) => x * 2,
-    );
+    const cb = lib.registerCallback({ return: 'i32', arguments: ['i32'] }, (x) => x * 2);
     try {
       assert.strictEqual(functions.call_int_callback(cb, 7), 14);
       // Negative i32 must land in the numeric writer (not the pointer writer,

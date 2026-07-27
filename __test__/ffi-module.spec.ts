@@ -1,28 +1,31 @@
-import test from 'ava'
-import { createRequire } from 'node:module'
-import { pathToFileURL } from 'node:url'
-const require = createRequire(import.meta.url)
-// Flags: 
+import test from 'ava';
+import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
+const require = createRequire(import.meta.url);
+// Flags:
 const assert = require('node:assert');
 const { spawnSync } = require('node:child_process');
 
-
 test('ffi cannot be loaded without node: prefix', () => {
-  assert.throws(() => {
-    require('ffi');
-  }, {
-    code: 'MODULE_NOT_FOUND',
-    message: /Cannot find module 'ffi'/,
-  });
+  assert.throws(
+    () => {
+      require('ffi');
+    },
+    {
+      code: 'MODULE_NOT_FOUND',
+      message: /Cannot find module 'ffi'/,
+    },
+  );
 });
 
 test('ffi userland entry can be loaded in a child process', () => {
-  const { stdout, stderr, status, signal } = spawnSync(process.execPath, [
-    '-e',
-    `const ffi = require(${JSON.stringify(require.resolve('../index.js'))}); console.log(typeof ffi.dlopen);`,
-  ], {
-    encoding: 'utf8',
-  });
+  const { stdout, stderr, status, signal } = spawnSync(
+    process.execPath,
+    ['-e', `const ffi = require(${JSON.stringify(require.resolve('../index.js'))}); console.log(typeof ffi.dlopen);`],
+    {
+      encoding: 'utf8',
+    },
+  );
 
   assert.strictEqual(stdout.trim(), 'function');
   assert.strictEqual(stderr, '');
@@ -31,12 +34,16 @@ test('ffi userland entry can be loaded in a child process', () => {
 });
 
 test('ffi userland package does not register a node:ffi builtin', () => {
-  const { stdout, stderr, status, signal } = spawnSync(process.execPath, [
-    '-p',
-    `require(${JSON.stringify(require.resolve('../index.js'))}) && require('node:module').builtinModules.includes('node:ffi')`,
-  ], {
-    encoding: 'utf8',
-  });
+  const { stdout, stderr, status, signal } = spawnSync(
+    process.execPath,
+    [
+      '-p',
+      `require(${JSON.stringify(require.resolve('../index.js'))}) && require('node:module').builtinModules.includes('node:ffi')`,
+    ],
+    {
+      encoding: 'utf8',
+    },
+  );
 
   assert.strictEqual(stdout, 'false\n');
   assert.strictEqual(stderr, '');
@@ -46,13 +53,13 @@ test('ffi userland package does not register a node:ffi builtin', () => {
 
 test('ffi userland entry can be imported from ESM', () => {
   const entryUrl = pathToFileURL(require.resolve('../index.js')).href;
-  const { stdout, stderr, status, signal } = spawnSync(process.execPath, [
-    '--input-type=module',
-    '-e',
-    `import * as ffi from ${JSON.stringify(entryUrl)}; console.log(typeof ffi.dlopen);`,
-  ], {
-    encoding: 'utf8',
-  });
+  const { stdout, stderr, status, signal } = spawnSync(
+    process.execPath,
+    ['--input-type=module', '-e', `import * as ffi from ${JSON.stringify(entryUrl)}; console.log(typeof ffi.dlopen);`],
+    {
+      encoding: 'utf8',
+    },
+  );
 
   assert.strictEqual(stdout.trim(), 'function');
   assert.strictEqual(stderr, '');
@@ -61,12 +68,13 @@ test('ffi userland entry can be imported from ESM', () => {
 });
 
 test('DynamicLibrary requires new', () => {
-  const { stdout, stderr, status, signal } = spawnSync(process.execPath, [
-        '-e',
-    `const ffi = require(${JSON.stringify(require.resolve('../index.js'))}); ffi.DynamicLibrary("missing");`,
-  ], {
-    encoding: 'utf8',
-  });
+  const { stdout, stderr, status, signal } = spawnSync(
+    process.execPath,
+    ['-e', `const ffi = require(${JSON.stringify(require.resolve('../index.js'))}); ffi.DynamicLibrary("missing");`],
+    {
+      encoding: 'utf8',
+    },
+  );
 
   assert.strictEqual(stdout, '');
   assert.match(stderr, /Class constructor DynamicLibrary cannot be invoked without 'new'/);

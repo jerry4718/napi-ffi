@@ -1,6 +1,6 @@
-import test from 'ava'
-import { createRequire } from 'node:module'
-const require = createRequire(import.meta.url)
+import test from 'ava';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
 // Flags:  --expose-gc
 const common = require('./common');
 const { gcUntil } = require('./common/gc');
@@ -26,8 +26,8 @@ test('dlopen without definitions returns empty function map', () => {
 
 test('dlopen resolves symbols from the current process with null path', (t) => {
   if (common.isWindows) {
-    t.pass()
-    return
+    t.pass();
+    return;
   }
   const { lib, functions } = ffi.dlopen(null, {
     uv_os_getpid: { return: 'i32', arguments: [] },
@@ -60,9 +60,7 @@ test('dlopen resolves functions from definitions', () => {
     // native function has length 0, but the wrapper exposes the parameter
     // count so `fn.length` is useful for introspection. The shared-buffer
     // wrapper is disabled on big-endian hosts.
-    assert.strictEqual(
-      functions.add_i32.length,
-      endianness() === 'BE' ? 0 : 2);
+    assert.strictEqual(functions.add_i32.length, endianness() === 'BE' ? 0 : 2);
     assert.strictEqual(typeof functions.add_i32.pointer, 'bigint');
     assert.strictEqual(Object.getPrototypeOf(functions), null);
   } finally {
@@ -112,10 +110,7 @@ test('getFunction caches signatures consistently', () => {
   try {
     const addI32 = lib.getFunction('add_i32', fixtureSymbols.add_i32);
 
-    assert.strictEqual(
-      lib.getFunction('add_i32', fixtureSymbols.add_i32).pointer,
-      addI32.pointer,
-    );
+    assert.strictEqual(lib.getFunction('add_i32', fixtureSymbols.add_i32).pointer, addI32.pointer);
 
     assert.throws(() => {
       lib.getFunction('add_i32', { arguments: ['u32', 'u32'], return: 'u32' });
@@ -154,11 +149,7 @@ test('FFI functions keep their owning library alive', async () => {
   lib = null;
 
   for (let i = 0; i < 5; i++) {
-    await gcUntil(
-      'FFI function keeps its owning library alive',
-      () => true,
-      1,
-    );
+    await gcUntil('FFI function keeps its owning library alive', () => true, 1);
     assert.ok(ref.deref() instanceof ffi.DynamicLibrary);
     assert.strictEqual(addI32(20, 22), 42);
   }
@@ -290,10 +281,13 @@ test('dynamic library APIs validate failures and bad signatures', () => {
     {
       const pointerLib = new ffi.DynamicLibrary(libraryPath);
       try {
-        assert.strictEqual(pointerLib.getFunction('add_i32', {
-          return: 'pointer',
-          arguments: ['pointer'],
-        }).pointer, pointerLib.getSymbol('add_i32'));
+        assert.strictEqual(
+          pointerLib.getFunction('add_i32', {
+            return: 'pointer',
+            arguments: ['pointer'],
+          }).pointer,
+          pointerLib.getSymbol('add_i32'),
+        );
       } finally {
         pointerLib.close();
       }
@@ -307,33 +301,45 @@ test('dynamic library APIs validate failures and bad signatures', () => {
       lib.getFunction('add_i32', { return: 'i32', arguments: ['i32\0bad'] });
     }, /Argument 0 of function add_i32 must not contain null bytes/);
 
-    assert.throws(() => {
-      lib.getFunctions('not an object');
-    }, {
-      name: 'TypeError',
-      message: 'Functions signatures must be an object',
-    });
+    assert.throws(
+      () => {
+        lib.getFunctions('not an object');
+      },
+      {
+        name: 'TypeError',
+        message: 'Functions signatures must be an object',
+      },
+    );
 
-    assert.throws(() => {
-      lib.getFunctions([]);
-    }, {
-      name: 'TypeError',
-      message: 'Functions signatures must be an object',
-    });
+    assert.throws(
+      () => {
+        lib.getFunctions([]);
+      },
+      {
+        name: 'TypeError',
+        message: 'Functions signatures must be an object',
+      },
+    );
 
-    assert.throws(() => {
-      lib.getFunctions([fixtureSymbols.add_i32]);
-    }, {
-      name: 'TypeError',
-      message: 'Functions signatures must be an object',
-    });
+    assert.throws(
+      () => {
+        lib.getFunctions([fixtureSymbols.add_i32]);
+      },
+      {
+        name: 'TypeError',
+        message: 'Functions signatures must be an object',
+      },
+    );
 
-    assert.throws(() => {
-      lib.getFunctions({ add_i32: 1 });
-    }, {
-      name: 'TypeError',
-      message: 'Signature of function add_i32 must be an object',
-    });
+    assert.throws(
+      () => {
+        lib.getFunctions({ add_i32: 1 });
+      },
+      {
+        name: 'TypeError',
+        message: 'Signature of function add_i32 must be an object',
+      },
+    );
 
     assert.throws(() => {
       lib.getFunction('add_i32', { return: 'bogus', arguments: [] });
@@ -341,14 +347,20 @@ test('dynamic library APIs validate failures and bad signatures', () => {
 
     const hasTrapError = new Error('signature has trap');
     assert.throws(() => {
-      lib.getFunction('add_i32', new Proxy({}, {
-        has(target, key) {
-          if (key === 'return') {
-            throw hasTrapError;
-          }
-          return Reflect.has(target, key);
-        },
-      }));
+      lib.getFunction(
+        'add_i32',
+        new Proxy(
+          {},
+          {
+            has(target, key) {
+              if (key === 'return') {
+                throw hasTrapError;
+              }
+              return Reflect.has(target, key);
+            },
+          },
+        ),
+      );
     }, hasTrapError);
 
     const getterError = new Error('signature getter');
@@ -362,5 +374,58 @@ test('dynamic library APIs validate failures and bad signatures', () => {
     }, getterError);
   } finally {
     lib.close();
+  }
+});
+
+test('DynamicLibrary evaluates function signatures once', () => {
+  function makeChangingSignature() {
+    const reads = { arguments: 0, return: 0 };
+    return {
+      reads,
+      signature: {
+        get arguments() {
+          reads.arguments++;
+          return reads.arguments === 1 ? Array(8).fill('i32') : ['i32'];
+        },
+        get return() {
+          reads.return++;
+          return 'i32';
+        },
+      },
+    };
+  }
+
+  {
+    const lib = new ffi.DynamicLibrary(libraryPath);
+    const { reads, signature } = makeChangingSignature();
+
+    try {
+      const fn = lib.getFunction('sum_8_i32', signature);
+      assert.strictEqual(fn(1, 2, 3, 4, 5, 6, 7, 8), 36);
+      assert.deepStrictEqual(reads, { arguments: 1, return: 1 });
+    } finally {
+      lib.close();
+    }
+  }
+
+  {
+    const lib = new ffi.DynamicLibrary(libraryPath);
+    const { reads, signature } = makeChangingSignature();
+    let definitionReads = 0;
+    const definitions = {
+      get sum_8_i32() {
+        definitionReads++;
+        return signature;
+      },
+    };
+
+    try {
+      const { sum_8_i32: fn } = lib.getFunctions(definitions);
+      assert.strictEqual(fn(1, 2, 3, 4, 5, 6, 7, 8), 36);
+      assert.strictEqual(definitionReads, 1);
+      assert.deepStrictEqual(reads, { arguments: 1, return: 1 });
+    } finally {
+      lib.close();
+    }
   }
 });

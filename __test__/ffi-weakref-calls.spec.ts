@@ -1,7 +1,7 @@
-import test from 'ava'
-import { createRequire } from 'node:module'
-const require = createRequire(import.meta.url)
-const assert = require('node:assert')
+import test from 'ava';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+const assert = require('node:assert');
 
 const { gcUntil } = require('./common/gc');
 const ffi = require('../index.js');
@@ -13,10 +13,7 @@ test('ffi unrefCallback releases callback function', async (t) => {
 
   let callback = () => 1;
   const ref = new WeakRef(callback);
-  const pointer = lib.registerCallback(
-    { arguments: ['i32'], return: 'i32' },
-    callback,
-  );
+  const pointer = lib.registerCallback({ arguments: ['i32'], return: 'i32' }, callback);
 
   lib.unrefCallback(pointer);
   callback = null;
